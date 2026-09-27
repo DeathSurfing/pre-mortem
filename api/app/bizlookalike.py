@@ -33,11 +33,22 @@ DOMAINS = ["pricing", "hiring", "vendor", "marketing", "launch", "buildvsbuy", "
 # the two can never drift apart. Used to arbitrate the domain between the two classifiers.
 COVERED_DOMAINS = frozenset(d.domain for d in bizcorpus.corpus())
 
-# Mode gate thresholds on Laya's domain_probability. Chosen from the measured gap above: non-decisions
-# cluster at 0.27-0.45 and decisions at 0.94-0.99, so anything over 0.60 is a decision and anything under
-# 0.35 is conversation. The band between is disambiguated by the model.
+# Mode gate thresholds on Laya's domain_probability.
+#
+# Measured on this corpus: greetings and thanks 0.21-0.45, context-only statements about a decision
+# 0.18-0.23, real decisions 0.93-0.99. So a high score is reliably a decision and a low score is reliably
+# not one.
+#
+# The floor is very low (0.15) on purpose. A statement of context without a proposed action ("Acme's
+# renewal is at risk and their champion wants a gesture") scores 0.18, while "thanks, that helps" scores
+# 0.21 — the signal cannot separate those two, so the model must arbitrate rather than Laya guessing. Only
+# messages Laya scores as emphatically empty skip the model entirely.
+#
+# The asymmetry still drives the design: a message that should have been reviewed and is answered
+# conversationally silently withholds the whole product, whereas a conversational message that gets
+# reviewed is merely noisy. So the band where Laya decides alone is kept tiny.
 LAYA_MODE_DECISION = 0.60
-LAYA_MODE_CHAT = 0.35
+LAYA_MODE_CHAT = 0.15
 
 CLASSIFY_SCHEMA = {
     "type": "object",
@@ -73,11 +84,22 @@ CLASSIFY_SYSTEM = (
     "`mode`, `domain`, `decision_type`, `intent`, and `rationale`."
 )
 
-# Mode gate thresholds on Laya's domain_probability. Chosen from the measured gap above: non-decisions
-# cluster at 0.27-0.45 and decisions at 0.94-0.99, so anything over 0.60 is a decision and anything under
-# 0.35 is conversation. The band between is disambiguated by the model.
+# Mode gate thresholds on Laya's domain_probability.
+#
+# Measured on this corpus: greetings and thanks 0.21-0.45, context-only statements about a decision
+# 0.18-0.23, real decisions 0.93-0.99. So a high score is reliably a decision and a low score is reliably
+# not one.
+#
+# The floor is very low (0.15) on purpose. A statement of context without a proposed action ("Acme's
+# renewal is at risk and their champion wants a gesture") scores 0.18, while "thanks, that helps" scores
+# 0.21 — the signal cannot separate those two, so the model must arbitrate rather than Laya guessing. Only
+# messages Laya scores as emphatically empty skip the model entirely.
+#
+# The asymmetry still drives the design: a message that should have been reviewed and is answered
+# conversationally silently withholds the whole product, whereas a conversational message that gets
+# reviewed is merely noisy. So the band where Laya decides alone is kept tiny.
 LAYA_MODE_DECISION = 0.60
-LAYA_MODE_CHAT = 0.35
+LAYA_MODE_CHAT = 0.15
 
 # Documented shape of the classify response. NOT passed as a JSON schema: the gateway only supports
 # `response_format: json_object`, so the fields are described in CLASSIFY_SYSTEM instead.
@@ -106,6 +128,22 @@ CLASSIFY_SCHEMA = {
 
 # A plain conversational reply. No memory is consulted and no id may be cited, because a normal chat answer
 # must never look like a reviewed decision.
+FOLLOWUP_SYSTEM = (
+    "You are the assistant inside pre-mortem. Earlier in this conversation the user put a business decision "
+    "to you and you reviewed it against the company's recorded history; the exchange is in the message "
+    "history.\n"
+    "You are now answering a FOLLOW-UP about that review. Treat it as conversation: further reasoning, "
+    "clarification, or reasoning about the trade-offs. Do NOT re-issue a full review, do not restate the "
+    "verdict, and do not repeat the evidence list.\n"
+    "Rules:\n"
+    "1. Only cite a decision id that already appears in the reviewed answer above. Never invent one. If the "
+    "follow-up needs data you were not given, say so and say what would settle it.\n"
+    "2. Do not give a fresh risk rating. You may reason about the existing one.\n"
+    "3. Answer in plain prose, 1-4 sentences unless more is clearly wanted. No headings, no bullet clusters.\n"
+    "4. If the follow-up is really a new decision rather than a question about the last answer, review that "
+    "new decision honestly instead of forcing it into the old context."
+)
+
 CHAT_SYSTEM = (
     "You are the assistant inside pre-mortem, a tool that reviews business decisions against a company's own "
     "recorded history.\n"
@@ -549,7 +587,8 @@ async def redflag_reflect(text: str, *, promoted: set[str] | None = None) -> dic
 
 # ------------------------------------------------------------------ streaming red-flag
 
-async def redflag_stream(text: str, *, promoted: set[str] | None = None):
+async def redflag_stream(text: str, *, promoted: set[str] | None = None,
+                         history: list[dict[str, str]] | None = None):
     """SSE generator for the chat UI.
 
     Event sequence, so the frontend can render the reasoning as it happens rather than a spinner:
@@ -563,6 +602,10 @@ async def redflag_stream(text: str, *, promoted: set[str] | None = None):
         error   -> anything that went wrong, with the partial answer preserved
 
     The verdict is computed before the prose, so the UI can show the risk banner while the text streams.
+
+    `history` carries the prior turns of the conversation. Its presence changes the routing: a follow-up is
+    conversation about the earlier review, not a fresh decision to review, so it is always answered as chat
+    with the prior turns in context.
     """
     s = settings()
     now = datetime.now(timezone.utc)
@@ -571,10 +614,23 @@ async def redflag_stream(text: str, *, promoted: set[str] | None = None):
         return "data: " + json.dumps({"type": kind, **data}, default=str) + "\n\n"
 
     try:
+        # A follow-up is conversation about the review already given, regardless of how decidable it reads in
+        # isolation. Without this, "what if we cap it at 15 percent?" gets reviewed from scratch and loses the
+        # thread it belongs to.
+        #
+        # This is settled BEFORE the classify event is emitted: doing it afterwards left the event reporting
+        # the raw classification, so the UI kept rendering a follow-up as a full dossier even though the
+        # answer itself was conversational.
+        is_followup = bool(history)
+
         yield ev("status", message="classifying the decision", step="classify")
         attrs, cmeta = await classify(text)
+        if is_followup:
+            attrs["mode"] = "chat"
+            attrs["follow_up"] = True
         domain, dtype = attrs.get("domain"), attrs.get("decision_type")
         yield ev("classify", domain=domain, decision_type=dtype, mode=attrs.get("mode"),
+                 follow_up=attrs.get("follow_up", False),
                  intent=attrs.get("intent"), rationale=attrs.get("rationale"),
                  laya=attrs.get("laya"), llm_calls=cmeta.get("llm_calls", 0))
 
@@ -582,7 +638,10 @@ async def redflag_stream(text: str, *, promoted: set[str] | None = None):
         # renders it as a plain chat bubble rather than a reviewed decision.
         if attrs.get("mode") == "chat":
             yield ev("status", message="replying", step="chat")
-            async for kind, piece in chat_stream(CHAT_SYSTEM, text, reasoning=True):
+            async for kind, piece in chat_stream(
+                FOLLOWUP_SYSTEM if is_followup else CHAT_SYSTEM, text,
+                reasoning=True, history=history,
+            ):
                 if kind == "reasoning":
                     yield ev("reasoning", text=piece)
                 else:

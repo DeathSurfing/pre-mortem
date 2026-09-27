@@ -119,6 +119,7 @@ async def chat_text(
     model: str | None = None,
     temperature: float = 0.4,
     max_tokens: int = 500,
+    history: list[dict[str, str]] | None = None,
 ) -> tuple[str | None, dict[str, Any]]:
     """Plain-text completion, used for the MEMORY=off baseline."""
     s = settings()
@@ -130,7 +131,15 @@ async def chat_text(
         "stream": False,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "messages": (
+            [{"role": "system", "content": system}]
+            + [
+                {"role": str(m.get("role")), "content": str(m.get("content", ""))}
+                for m in (history or [])
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+            + [{"role": "user", "content": user}]
+        ),
     }
     try:
         async with httpx.AsyncClient(timeout=120.0) as hx:
@@ -164,6 +173,7 @@ async def chat_stream(
     temperature: float = 0.3,
     max_tokens: int = 3000,
     reasoning: bool = False,
+    history: list[dict[str, str]] | None = None,
 ):
     """Async generator of (kind, text) pairs, where kind is "content" or "reasoning".
 
@@ -189,7 +199,15 @@ async def chat_stream(
         "stream": True,
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        "messages": (
+            [{"role": "system", "content": system}]
+            + [
+                {"role": str(m.get("role")), "content": str(m.get("content", ""))}
+                for m in (history or [])
+                if m.get("role") in ("user", "assistant") and m.get("content")
+            ]
+            + [{"role": "user", "content": user}]
+        ),
     }
     headers = {
         "Authorization": f"Bearer {s.llm_key}",

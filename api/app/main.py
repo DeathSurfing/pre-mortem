@@ -235,6 +235,53 @@ async def biz_redflag_stream(prompt: str = Query("", description="the decision t
                                       "Connection": "keep-alive"})
 
 
+class Turn(BaseModel):
+    """One prior message in the conversation."""
+
+    role: str
+    content: str
+
+
+class StreamRequest(BaseModel):
+    prompt: str = ""
+    preset: str | None = None
+    use_ledger: bool = True
+    """Prior turns, oldest first. Presence makes this message a follow-up: it is answered conversationally
+    with this context rather than reviewed from scratch."""
+    history: list[Turn] = []
+
+
+@app.post("/api/biz/redflag/stream")
+async def biz_redflag_stream_post(body: StreamRequest):
+    """POST variant of the SSE stream, so a follow-up can carry the conversation.
+
+    A GET with the whole history in the query string would break on length, and history is the point: a
+    follow-up only makes sense with the review it is following up on.
+    """
+    text = body.prompt
+    if body.preset and not text.strip():
+        match = bizcorpus.PROMPT_BY_KEY.get(body.preset)
+        if match is None:
+            raise HTTPException(404, f"unknown preset {body.preset}")
+        text = match.text
+    if not text.strip():
+        raise HTTPException(422, "provide a prompt")
+
+    history = [{"role": h.role, "content": h.content} for h in body.history][-12:]
+    promoted = await bizledger.promoted_classes() if body.use_ledger else set()
+
+    async def gen():
+        yield "data: " + json.dumps({"type": "status", "message": "connected", "step": "start"}) + "\n\n"
+        if promoted:
+            yield "data: " + json.dumps({"type": "ledger", "promoted": sorted(promoted)}) + "\n\n"
+        async for chunk in bizlookalike.redflag_stream(text, promoted=promoted, history=history):
+            yield chunk
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
+
+
 @app.get("/api/biz/ledger")
 async def biz_ledger() -> dict[str, Any]:
     return await bizledger.summary()

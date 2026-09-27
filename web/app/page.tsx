@@ -10,12 +10,14 @@ import {
   type Opinion,
   type Precedent,
   type PromptPreset,
+  type HistoryTurn,
+  type GuessBlock,
+  type Health,
 } from "@/lib/api";
 import { DecisionId, Label } from "@/components/editorial";
 import { AnnotatedProse, SourceRow } from "@/components/sources";
 import { GuessPanel } from "@/components/guess";
 import { Thinking } from "@/components/reasoning";
-import { GuessBlock, Health } from "@/lib/api";
 import { Sidebar } from "@/components/sidebar";
 import { DEFAULT_SETTINGS, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
@@ -175,6 +177,15 @@ export default function Page() {
       { id, question, status: "connecting", streamed: "", busy: true, followUp: isFollowUp },
     ]);
 
+    // Prior turns become the conversation passed to the backend. The assistant side uses the answer text
+    // that was actually shown, so the model sees the same thing the user did.
+    const history: HistoryTurn[] = turnsRef.current.flatMap((prev) => {
+      const answer = (prev.streamed || prev.opinion?.headline || "").trim();
+      const out: HistoryTurn[] = [{ role: "user", content: prev.question }];
+      if (answer) out.push({ role: "assistant", content: answer });
+      return out;
+    });
+
     try {
       await streamRedflag(question, (e) => {
         if (e.type === "status") patch((t) => ({ ...t, status: e.message }));
@@ -184,6 +195,7 @@ export default function Page() {
             domain: e.domain,
             dtype: e.decision_type,
             mode: e.mode ?? "decision",
+            followUp: e.follow_up ?? t.followUp,
             laya: e.laya,
             status: e.mode === "chat" ? "replying" : "recalling past decisions",
           }));
@@ -204,7 +216,7 @@ export default function Page() {
             busy: false,
           }));
         else if (e.type === "error") patch((t) => ({ ...t, error: e.message, busy: false, status: "error" }));
-      });
+      }, undefined, history);
       patch((t) => ({ ...t, busy: false }));
     } catch (err) {
       patch((t) => ({ ...t, error: String(err), busy: false, status: "error" }));

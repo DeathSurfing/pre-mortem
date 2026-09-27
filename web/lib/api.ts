@@ -47,7 +47,7 @@ export type Opinion = {
 export type StreamEvent =
   | { type: "status"; message: string; step: string }
   | { type: "ledger"; promoted: string[] }
-  | { type: "classify"; domain: string; decision_type: string; mode?: "decision" | "chat"; intent: string; rationale: string; laya: LayaSignals | null }
+  | { type: "classify"; domain: string; decision_type: string; mode?: "decision" | "chat"; follow_up?: boolean; intent: string; rationale: string; laya: LayaSignals | null }
   | { type: "verdict"; risk: "high" | "medium" | "low" | "unknown"; confidence: number; no_precedent: boolean; rules: string; relaxed: boolean }
   | { type: "precedents"; precedents: Precedent[]; declined: Declined[] }
   | { type: "delta"; text: string }
@@ -110,13 +110,26 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /** Parse an SSE byte stream into typed events, invoking onEvent as each arrives. */
+export type HistoryTurn = { role: "user" | "assistant"; content: string };
+
+/** How many prior turns to send. Enough for continuity, bounded so the request cannot grow without limit. */
+const HISTORY_LIMIT = 12;
+
 export async function streamRedflag(
   prompt: string,
   onEvent: (e: StreamEvent) => void,
   signal?: AbortSignal,
+  history: HistoryTurn[] = [],
 ): Promise<void> {
-  const url = `${BASE}/api/biz/redflag/stream?prompt=${encodeURIComponent(prompt)}`;
-  const res = await fetch(url, { headers: { accept: "text/event-stream" }, signal, cache: "no-store" });
+  // POST rather than GET: a follow-up carries the preceding conversation, which will not survive a query
+  // string. `preset` keeps working through the body.
+  const res = await fetch(`${BASE}/api/biz/redflag/stream`, {
+    method: "POST",
+    headers: { accept: "text/event-stream", "content-type": "application/json" },
+    body: JSON.stringify({ prompt, history: history.slice(-HISTORY_LIMIT) }),
+    signal,
+    cache: "no-store",
+  });
   if (!res.ok || !res.body) {
     throw new Error(`stream -> ${res.status} ${(await res.text()).slice(0, 200)}`);
   }
