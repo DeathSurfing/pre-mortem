@@ -1,424 +1,362 @@
 "use client";
-import { useEffect, useState } from "react";
-import { api, type Assessment, type Health, type Ledger, type Metrics, type PresetInfo } from "@/lib/api";
+import { useEffect, useRef, useState } from "react";
+import {
+  api,
+  streamRedflag,
+  type Declined,
+  type Ledger,
+  type LayaSignals,
+  type Opinion,
+  type Precedent,
+  type PromptPreset,
+} from "@/lib/api";
 
-/* ---------- small presentational pieces ---------- */
+/* ---------------------------------------------------------------- pieces */
 
-function Trend({ trend }: { trend: string }) {
-  return <span className={`trend ${trend}`}>{trend}</span>;
-}
-
-function Outcome({ outcome, isMirror }: { outcome: string | null; isMirror: boolean }) {
-  if (isMirror) return <span className="badge mirror">near-identical clean mirror</span>;
-  if (!outcome) return null;
-  return <span className={`badge ${outcome}`}>{outcome}</span>;
-}
-
-function PrecedentCard({ p, top }: { p: Assessment["precedents"][number]; top: boolean }) {
+function RiskBanner({ risk, confidence, noPrecedent, rules }: {
+  risk: string; confidence: number; noPrecedent: boolean; rules: string;
+}) {
+  const label = noPrecedent ? "no precedent" : `${risk} risk`;
   return (
-    <div className={`prec${top ? " top" : ""}`}>
+    <div className={`banner risk-${risk}`}>
+      <div>
+        <div className="risk">{label}</div>
+        <div className="dim">{rules}</div>
+      </div>
+      <div className="conf">
+        <b>{noPrecedent ? "—" : confidence.toFixed(2)}</b>
+        <span className="dim">confidence from evidence</span>
+      </div>
+    </div>
+  );
+}
+
+function LayaPanel({ laya, domain, dtype }: { laya: LayaSignals | null; domain: string; dtype: string }) {
+  if (!laya) return null;
+  const pct = (v: number | null) => (v === null ? "—" : `${(v * 100).toFixed(0)}%`);
+  return (
+    <div className="laya">
+      <div className="laya-head">
+        <span className="badge">classified locally by Laya</span>
+        <span className="mono">{domain} / {dtype}</span>
+      </div>
+      <div className="laya-grid">
+        <div>
+          <span className="dim">domain certainty</span>
+          <b>{pct(laya.domain_confidence)}</b>
+        </div>
+        <div>
+          <span className="dim">reversibility</span>
+          <b>{laya.reversibility_label ?? "—"}</b>
+        </div>
+        <div>
+          <span className="dim">value given away</span>
+          <b>{pct(laya.gives_value_without_commitment)}</b>
+        </div>
+        <div>
+          <span className="dim">blast radius</span>
+          <b>{pct(laya.is_high_blast_radius)}</b>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PrecedentCard({ p, top }: { p: Precedent; top: boolean }) {
+  return (
+    <div className={`prec${top ? " top" : ""}${p.attribution_ok ? "" : " suspect"}`}>
       <div className="head">
         <span className="lid">{p.launch_id}</span>
         <span className="dim">{p.date}</span>
-        <span
-          className="badge proof"
-          title={
-            p.memory_type === "observation"
-              ? "Hindsight consolidated this into a standing belief across several launches, so it carries more weight than one raw record"
-              : "raw extracted record for this single launch"
-          }
-        >
-          {p.memory_type === "observation" ? "consolidated" : "raw"} · proof {p.proof_count}
+        <span className="badge proof" title="how much evidence stands behind this">
+          evidence {p.proof_count}
         </span>
-        <Trend trend={p.trend} />
-        <Outcome outcome={p.outcome} isMirror={p.is_mirror} />
-        <span className="dim">{p.service} · {p.change_class}</span>
-        <span className="dim" style={{ marginLeft: "auto" }} title="rank score, shown so the ranking is not a black box">
-          score {p.score.total}
+        {p.is_mirror ? (
+          <span className="badge mirror">near-identical, went fine</span>
+        ) : p.outcome ? (
+          <span className={`badge ${p.outcome}`}>{p.outcome}</span>
+        ) : (
+          <span className="badge">outcome not recorded</span>
+        )}
+        {!p.attribution_ok && (
+          <span className="badge suspect" title="this record's id could not be verified against the corpus">
+            id unverified
+          </span>
+        )}
+        <span className="dim" style={{ marginLeft: "auto" }}>
+          {p.domain} · {p.decision_type}
         </span>
       </div>
       {p.text && <div className="txt">{p.text}</div>}
-      {p.source_chunk && (
-        <details>
-          <summary>source chunk used for retrieval</summary>
-          <div className="chunk">{p.source_chunk}</div>
-        </details>
-      )}
     </div>
   );
 }
 
-function Flip({ flip, precedents }: { flip: Assessment["flip"]; precedents: Assessment["precedents"] }) {
-  if (!flip) return null;
-  const cited = precedents.find((p) => p.launch_id === flip.precedent_launch_id);
-  return (
-    <div className="flip">
-      <div className="h">the difference · not a similarity match</div>
-      <p className="detail">{flip.differentiating_detail}</p>
-      {flip.why_it_matters && <p className="why">{flip.why_it_matters}</p>}
-      {flip.cited_fix && (
-        <div className="fix">
-          <b>fix that resolved it:</b> {flip.cited_fix}
-        </div>
-      )}
-      <div className="cite">
-        cited precedent: <span className="mono">{flip.precedent_launch_id}</span>
-        {cited ? ` · ${cited.date} · proof ${cited.proof_count}` : " (not in the recalled set — flagged)"}
-      </div>
-    </div>
-  );
-}
+/* ---------------------------------------------------------------- the chat */
 
-/* ---------- the screen ---------- */
+type Turn = {
+  id: string;
+  question: string;
+  status: string;
+  domain?: string;
+  dtype?: string;
+  laya?: LayaSignals | null;
+  risk?: string;
+  confidence?: number;
+  noPrecedent?: boolean;
+  rules?: string;
+  precedents?: Precedent[];
+  declined?: Declined[];
+  streamed: string;
+  opinion?: Opinion | null;
+  cited?: string[];
+  uncited?: string[];
+  unverified?: string[];
+  error?: string;
+  busy: boolean;
+};
 
 export default function Page() {
-  const [health, setHealth] = useState<Health | null>(null);
-  const [presets, setPresets] = useState<PresetInfo[]>([]);
-  const [sel, setSel] = useState("A");
-  const [memory, setMemory] = useState(true);
-  const [engine, setEngine] = useState<"recall" | "reflect">("recall");
-  const [out, setOut] = useState<Assessment | null>(null);
-  const [off, setOff] = useState<Assessment | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [input, setInput] = useState("");
+  const [presets, setPresets] = useState<PromptPreset[]>([]);
   const [ledger, setLedger] = useState<Ledger | null>(null);
-  const [metrics, setMetrics] = useState<Metrics | null>(null);
-  const [preview, setPreview] = useState<Record<string, unknown> | null>(null);
-  const [showPreview, setShowPreview] = useState(false);
+  const [health, setHealth] = useState<Record<string, unknown> | null>(null);
+  const [showEvidence, setShowEvidence] = useState(true);
+  const endRef = useRef<HTMLDivElement>(null);
+  const busyRef = useRef(false);
 
   useEffect(() => {
-    api.health().then(setHealth).catch((e) => setErr(String(e)));
-    api.presets().then(setPresets).catch(() => {});
+    api.prompts().then(setPresets).catch(() => {});
     api.ledger().then(setLedger).catch(() => {});
-    api.metrics().then(setMetrics).catch(() => {});
+    api.health().then(setHealth).catch(() => {});
   }, []);
 
-  async function run(withMemory: boolean, eng: "recall" | "reflect" = engine) {
-    setBusy(true);
-    setErr("");
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [turns]);
+
+  async function ask(text: string) {
+    const question = text.trim();
+    if (!question || busyRef.current) return;
+    busyRef.current = true;
+    setInput("");
+    const id = `${Date.now()}`;
+    const patch = (fn: (t: Turn) => Turn) =>
+      setTurns((prev) => prev.map((t) => (t.id === id ? fn(t) : t)));
+
+    setTurns((prev) => [
+      ...prev,
+      { id, question, status: "connecting", streamed: "", busy: true },
+    ]);
+
     try {
-      const r = await api.assess(sel, withMemory, eng);
-      if (withMemory) setOut(r);
-      else setOff(r);
-    } catch (e) {
-      setErr(String(e));
+      await streamRedflag(question, (e) => {
+        if (e.type === "status") patch((t) => ({ ...t, status: e.message }));
+        else if (e.type === "classify")
+          patch((t) => ({ ...t, domain: e.domain, dtype: e.decision_type, laya: e.laya, status: "recalling" }));
+        else if (e.type === "verdict")
+          patch((t) => ({ ...t, risk: e.risk, confidence: e.confidence, noPrecedent: e.no_precedent, rules: e.rules, status: "writing" }));
+        else if (e.type === "precedents")
+          patch((t) => ({ ...t, precedents: e.precedents, declined: e.declined }));
+        else if (e.type === "delta") patch((t) => ({ ...t, streamed: t.streamed + e.text }));
+        else if (e.type === "done")
+          patch((t) => ({
+            ...t,
+            opinion: e.opinion ?? null,
+            cited: e.citations_in_prose,
+            uncited: e.uncited_facts,
+            unverified: e.attribution_unverified,
+            status: "done",
+            busy: false,
+          }));
+        else if (e.type === "error") patch((t) => ({ ...t, error: e.message, busy: false, status: "error" }));
+      });
+      patch((t) => ({ ...t, busy: false }));
+    } catch (err) {
+      patch((t) => ({ ...t, error: String(err), busy: false, status: "error" }));
     } finally {
-      setBusy(false);
+      busyRef.current = false;
     }
   }
 
-  const preset = presets.find((p) => p.key === sel);
+  const laHealth = (health?.laya ?? null) as null | {
+    enabled?: boolean;
+    loaded?: boolean;
+    error?: string | null;
+  };
 
   return (
-    <div className="shell">
+    <div className="shell chat-shell">
       <div className="topbar">
         <h1>pre-mortem</h1>
-        <span className="tag">your deploy history, argued back at you before you ship</span>
+        <span className="tag">flag a decision before you make it, from what your company already learned</span>
         <span className="spacer" />
-        <span className="dim">
-          {health?.features?.api_version ? `hindsight ${health.features.api_version}` : ""}
-          {health?.models ? ` · ${health.models.llm}` : ""}
-          {health?.bank ? ` · ${health.documents?.length ?? 0} docs` : ""}
-        </span>
+        {laHealth && (
+          <span className="dim" title={String(laHealth.error || "Laya classifies each decision locally, offline")}>
+            laya {laHealth.loaded ? "ready" : laHealth.enabled ? "loading" : "off"}
+          </span>
+        )}
+        <button className="ghost" onClick={() => setShowEvidence((v) => !v)}>
+          {showEvidence ? "hide" : "show"} evidence
+        </button>
       </div>
 
-      {(err || (health && !health.ok)) && (
-        <div className="warn" style={{ marginBottom: 14 }}>
-          {err || `backend not ready: ${health?.error || (health?.problems || []).join("; ")}`}
+      {ledger && ledger.promoted_classes.length > 0 && (
+        <div className="ledgerbar">
+          <span className="dim">this company has been burned before on:</span>
+          {ledger.promoted_classes.map((c) => (
+            <span key={c} className="badge promoted">{c}</span>
+          ))}
+          <span className="dim">
+            {ledger.ignored} of {ledger.flags} past warnings were ignored, {ledger.costed} of those cost something
+          </span>
         </div>
       )}
 
-      <div className="grid">
-        {/* ---------------- left: the pending change ---------------- */}
-        <div>
-          <div className="card">
-            <h2>pending change</h2>
-            {presets.map((p) => (
-              <button
-                key={p.key}
-                className={`preset${sel === p.key ? " sel" : ""}`}
-                onClick={() => {
-                  setSel(p.key);
-                  setOut(null);
-                  setOff(null);
-                }}
-              >
-                <span className="k">{p.key}</span>
-                <span className="lbl">
-                  {p.service} · {p.change_class}
-                </span>
-                <span className="svc">{p.change}</span>
-              </button>
-            ))}
-            {preset && (
-              <>
-                <h3 style={{ marginTop: 14 }}>diff</h3>
-                <div className="diff">{preset.diff}</div>
-              </>
+      <div className="thread">
+        {turns.length === 0 && (
+          <div className="empty">
+            <h2>Ask about a decision you are considering</h2>
+            <p className="dim">
+              It searches what this company has actually done before and flags what went wrong, citing each
+              past decision by id. No precedent means it says so instead of inventing one.
+            </p>
+            <div className="presets">
+              {presets.map((p) => (
+                <button key={p.key} className="preset-chip" onClick={() => ask(p.text)}>
+                  <b>{p.label}</b>
+                  <span className="dim">{p.expect}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {turns.map((t) => (
+          <div key={t.id} className="turn">
+            <div className="q">{t.question}</div>
+
+            {t.status !== "done" && t.status !== "error" && (
+              <div className="stage">
+                <span className="spin" />
+                <span className="dim">{t.status}…</span>
+              </div>
             )}
-          </div>
 
-          <div className="card">
-            <h2>memory</h2>
-            <div className="row" style={{ marginBottom: 10 }}>
-              <button className={memory ? "on" : ""} onClick={() => setMemory(true)}>
-                on
-              </button>
-              <button className={!memory ? "on" : ""} onClick={() => setMemory(false)}>
-                off
-              </button>
-            </div>
-            <div className="dim" style={{ marginBottom: 10 }}>
-              {memory
-                ? "recall + rank, cited. recall uses no LLM."
-                : "no history at all: the same question with an empty memory."}
-            </div>
-            <div className="row">
-              <button className={engine === "recall" ? "on" : ""} onClick={() => setEngine("recall")}>
-                recall engine
-              </button>
-              <button className={engine === "reflect" ? "on" : ""} onClick={() => setEngine("reflect")}>
-                reflect engine
-              </button>
-            </div>
-            <div className="dim" style={{ marginTop: 8 }}>
-              reflect costs tokens (Hindsight answers it itself). recall is retrieval only.
-            </div>
-            <div className="row" style={{ marginTop: 12 }}>
-              <button className="primary" disabled={busy} onClick={() => run(memory, engine)}>
-                {busy ? <span className="spin" /> : null} assess
-              </button>
-              <button className="ghost" disabled={busy} onClick={() => run(false, "recall")}>
-                run memory=off
-              </button>
-            </div>
-          </div>
+            {t.error && <div className="warn">{t.error}</div>}
 
-          {ledger && (
-            <div className="card">
-              <h2>ignored-warning ledger</h2>
-              <div className="kv">
-                <span className="k">flags raised</span>
-                <span className="v">{ledger.flags}</span>
-                <span className="k">ignored</span>
-                <span className="v">{ledger.ignored}</span>
-                <span className="k">cost an incident</span>
-                <span className="v">{ledger.costed}</span>
-              </div>
-              {ledger.promoted_classes.length > 0 && (
-                <div style={{ marginTop: 10 }}>
-                  <div className="dim">now leads with:</div>
-                  {ledger.promoted_classes.map((c) => (
-                    <div key={c} className="mono" style={{ color: "var(--accent)", fontSize: 12.5 }}>
-                      {c}
-                    </div>
-                  ))}
-                </div>
-              )}
-              <details style={{ marginTop: 10 }}>
-                <summary className="dim">every flag</summary>
-                {ledger.rows.map((r, i) => (
-                  <div key={i} className="declined" style={{ marginTop: 8 }}>
-                    <div className="mono" style={{ fontSize: 12 }}>
-                      {r.launch_id} · {r.ignored ? "ignored" : "actioned"}
-                      {r.costed ? " · cost an incident" : ""}
-                    </div>
-                    <div className="r">{r.text}</div>
+            {t.risk && (
+              <RiskBanner risk={t.risk} confidence={t.confidence ?? 0} noPrecedent={!!t.noPrecedent} rules={t.rules ?? ""} />
+            )}
+
+            {showEvidence && t.laya !== undefined && t.domain && (
+              <LayaPanel laya={t.laya ?? null} domain={t.domain} dtype={t.dtype ?? ""} />
+            )}
+
+            {t.opinion?.headline && (
+              <div className="answer">
+                <p className="headline">{t.opinion.headline}</p>
+                {t.opinion.why && <p className="why">{t.opinion.why}</p>}
+                {t.opinion.differentiating_detail && (
+                  <div className="flip">
+                    <div className="h">the difference · not a similarity match</div>
+                    <p className="detail">{t.opinion.differentiating_detail}</p>
                   </div>
-                ))}
-              </details>
-            </div>
-          )}
-
-          {metrics && (
-            <div className="card">
-              <h2>replay, no lookahead</h2>
-              <div className="kv">
-                <span className="k">materialised launches</span>
-                <span className="v">{metrics.totals.launches}</span>
-                <span className="k">precedent derivable</span>
-                <span className="v">{metrics.totals.derivable}</span>
-                <span className="k">agent actually found</span>
-                <span className="v">{metrics.totals.found_precedent}</span>
-                <span className="k">missed</span>
-                <span className="v">{metrics.totals.gap}</span>
-              </div>
-              <div className="bars">
-                {metrics.epochs.map((e) => (
-                  <div
-                    key={e.epoch}
-                    className="b"
-                    style={{ height: `${Math.max(4, (e.flagged_high / metrics.epochs[0].launches) * 100)}%` }}
-                  >
-                    <span>e{e.epoch}</span>
+                )}
+                {t.opinion.suggested_guardrail && (
+                  <div className="guard">
+                    <b>make it safe:</b> {t.opinion.suggested_guardrail}
                   </div>
-                ))}
-              </div>
-              <div className="dim" style={{ marginTop: 22 }}>
-                bars = launches flagged high risk per 5-launch epoch. {metrics.method}
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* ---------------- right: the answer ---------------- */}
-        <div>
-          {off && !out && (
-            <div className="card">
-              <h2>memory=off baseline</h2>
-              <div className="txt" style={{ whiteSpace: "pre-wrap", color: "#c9d5e1" }}>
-                {off.baseline || "(no output)"}
-              </div>
-              <div className="dim" style={{ marginTop: 10 }}>
-                nothing here is checkable: no launch id, no proof count, no way to know if it happened before.
-              </div>
-            </div>
-          )}
-
-          {out && (
-            <>
-              <div className={`banner risk-${out.risk}`}>
-                <div>
-                  <div className="risk">{out.risk === "unknown" ? "no precedent" : `${out.risk} risk`}</div>
-                  <div className="dim">{out.verdict_rules}</div>
-                </div>
-                <div className="conf">
-                  <b>{out.no_precedent ? "—" : out.confidence.toFixed(2)}</b>
-                  <span className="dim">confidence from proof counts</span>
-                </div>
-              </div>
-
-              <div style={{ height: 14 }} />
-
-              {out.no_precedent && (
-                <div className="card">
-                  <h2>refusing to stretch an analogy</h2>
-                  <div className="txt">{out.no_precedent_message}</div>
-                  {out.declined.length > 0 && (
-                    <>
-                      <h3 style={{ marginTop: 14 }}>considered and declined</h3>
-                      {out.declined.map((d, i) => (
-                        <div key={i} className="declined">
-                          <div className="mono" style={{ fontSize: 12.5 }}>
-                            {d.launch_id ?? "(unattributed memory)"} · proof {d.proof_count}
-                          </div>
-                          <div className="r">{d.reason}</div>
-                        </div>
+                )}
+                {t.opinion.open_questions?.length > 0 && (
+                  <div className="qs">
+                    <div className="dim">confirm first</div>
+                    <ul>
+                      {t.opinion.open_questions.map((q, i) => (
+                        <li key={i}>{q}</li>
                       ))}
-                    </>
-                  )}
-                </div>
-              )}
-
-              {out.flip && <Flip flip={out.flip} precedents={out.precedents} />}
-
-              {out.reflect?.text && (
-                <div className="card">
-                  <h2>hindsight reflect answered it itself</h2>
-                  <div className="txt" style={{ whiteSpace: "pre-wrap", color: "#c9d5e1" }}>
-                    {out.reflect.text}
+                    </ul>
                   </div>
-                  {out.reflect.based_on && out.reflect.based_on.length > 0 && (
-                    <details style={{ marginTop: 10 }}>
-                      <summary className="dim">based on {out.reflect.based_on.length} memories</summary>
-                      {out.reflect.based_on.map((m, i) => (
-                        <div key={i} className="chunk">
-                          {m.text}
-                        </div>
-                      ))}
-                    </details>
-                  )}
-                </div>
-              )}
+                )}
+              </div>
+            )}
 
-              <div className="card">
-                <h2>
-                  precedents {out.precedents.length > 0 ? `(${out.precedents.length}, ranked)` : "(none)"}
-                </h2>
-                {out.precedents.map((p, i) => (
+            {/* while streaming, show the raw text as it arrives */}
+            {t.busy && t.streamed && (
+              <div className="answer streaming">
+                <pre>{t.streamed}</pre>
+                <span className="caret" />
+              </div>
+            )}
+
+            {!t.busy && !t.opinion?.headline && t.streamed && (
+              <div className="answer">
+                <pre>{t.streamed}</pre>
+              </div>
+            )}
+
+            {showEvidence && t.precedents && t.precedents.length > 0 && (
+              <div className="evidence">
+                <div className="ev-head">
+                  <span className="dim">
+                    {t.precedents.length} precedents
+                    {t.cited?.length ? ` · ${t.cited.length} cited in the answer` : ""}
+                    {t.uncited?.length ? ` · ${t.uncited.length} uncited` : ""}
+                  </span>
+                </div>
+                {t.precedents.map((p, i) => (
                   <PrecedentCard key={p.launch_id || i} p={p} top={i === 0} />
                 ))}
-                {out.precedents.length === 0 && (
-                  <div className="dim">nothing cleared the proof threshold for this service and change class.</div>
-                )}
-                {out.precedents.some((p) => p.is_mirror) && (
-                  <div className="dim" style={{ marginTop: 6 }}>
-                    a clean mirror is present: the near-identical launch that did <b>not</b> break. That contrast is
-                    what the flip detail is extracted from.
+                {t.unverified && t.unverified.length > 0 && (
+                  <div className="warn" style={{ marginTop: 8 }}>
+                    {t.unverified.join(", ")}: the id could not be verified against the corpus, so the
+                    content is used but the id is not quoted.
                   </div>
                 )}
-              </div>
-
-              {out.declined.length > 0 && !out.no_precedent && (
-                <div className="card">
-                  <h2>also considered, declined</h2>
-                  {out.declined.map((d, i) => (
-                    <div key={i} className="declined">
-                      <div className="mono" style={{ fontSize: 12.5 }}>
-                        {d.launch_id ?? "(unattributed)"} · {d.service} · {d.change_class}
+                {t.declined && t.declined.length > 0 && (
+                  <details>
+                    <summary className="dim">also considered, declined ({t.declined.length})</summary>
+                    {t.declined.map((d) => (
+                      <div key={d.launch_id} className="declined">
+                        <div className="mono" style={{ fontSize: 12 }}>
+                          {d.launch_id} · evidence {d.proof_count}
+                        </div>
+                        <div className="r">{d.reason}</div>
                       </div>
-                      <div className="r">{d.reason}</div>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              <div className="card">
-                <h2>how this answer was produced</h2>
-                <div className="kv">
-                  <span className="k">verdict by</span>
-                  <span className="v">{out.engine.ranker} ranker (no model)</span>
-                  <span className="k">engine</span>
-                  <span className="v">{out.engine.engine || out.engine.ranker}</span>
-                  <span className="k">llm calls</span>
-                  <span className="v">
-                    {out.engine.llm_calls} → wrote the flip sentence only
-                  </span>
-                  <span className="k">model</span>
-                  <span className="v">{out.engine.model_used || out.engine.llm}</span>
-                  <span className="k">facts used</span>
-                  <span className="v">{out.facts_used.join(", ") || "none"}</span>
-                  <span className="k">errors</span>
-                  <span className="v">{out.engine.llm_error || "none"}</span>
-                  <span className="k">ledger</span>
-                  <span className="v">
-                    {out.ledger_promoted.length ? out.ledger_promoted.join(", ") : "no promoted classes yet"}
-                  </span>
-                </div>
-                {out.engine.citation_warning && (
-                  <div className="warn" style={{ marginTop: 10 }}>
-                    {out.engine.citation_warning}
-                  </div>
-                )}
-                <div className="row" style={{ marginTop: 12 }}>
-                  <button
-                    className="ghost"
-                    onClick={async () => {
-                      setShowPreview((v) => !v);
-                      if (!preview) setPreview(await api.promptPreview("retain").catch((e) => ({ error: String(e) })));
-                    }}
-                  >
-                    {showPreview ? "hide" : "show"} the assembled prompt
-                  </button>
-                </div>
-                {showPreview && preview && (
-                  <pre className="raw">{JSON.stringify(preview, null, 1)}</pre>
+                    ))}
+                  </details>
                 )}
               </div>
-            </>
-          )}
-
-          {!out && !off && (
-            <div className="card">
-              <h2>start here</h2>
-              <div className="dim">
-                Pick a pending change on the left, then assess it twice: once with memory off and once with memory on.
-                The difference is the product.
-              </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        ))}
+        <div ref={endRef} />
       </div>
+
+      <form
+        className="composer"
+        onSubmit={(e) => {
+          e.preventDefault();
+          ask(input);
+        }}
+      >
+        <textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              ask(input);
+            }
+          }}
+          placeholder="Describe a decision you are considering…  (Enter to send, Shift+Enter for a new line)"
+          rows={2}
+        />
+        <button className="primary" type="submit" disabled={!input.trim()}>
+          flag it
+        </button>
+      </form>
     </div>
   );
 }

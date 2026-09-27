@@ -14,13 +14,14 @@ only classifies the prompt and writes prose. That separation is what makes the n
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
 from . import bizcorpus, hindsight, laya_client
 from .bizcorpus import Prompt
 from .config import settings
-from .llm import chat_json, chat_text
+from .llm import chat_json, chat_stream, chat_text
 from .rank import rank, verdict
 
 DOMAINS = ["pricing", "hiring", "vendor", "marketing", "launch", "buildvsbuy", "expansion", "operations", "finance", "legal"]
@@ -68,9 +69,18 @@ OPINION_SCHEMA = {
     },
 }
 
-OPINION_SYSTEM = (
+STREAM_OPINION_SYSTEM = (
     "You are a business decision reviewer inside a company. You are given a decision the user is "
     "considering and the company's OWN recalled past decisions in the same domain.\n"
+    "Write your review in EXACTLY this plain-text format, with these five labels and nothing else. "
+    "Do not use JSON, braces, or code fences.\n"
+    "HEADLINE: one sentence verdict in plain business language\n"
+    "WHY: 2-4 sentences of reasoning\n"
+    "DIFFERENCE: the one detail that differed between a past decision that went badly and a "
+    "near-identical one that went fine, or NONE if no such pair exists\n"
+    "GUARDRAIL: the specific condition that would make this safe, taken from the recorded lessons, "
+    "or NONE\n"
+    "QUESTIONS: up to 3 things to confirm first, one per line prefixed with '- ', or NONE\n"
     "Rules, in order of importance:\n"
     "1. EVERY claim must cite the decision id it comes from, inline, in the sentence. Write it like "
     "'we lost 6.2 points of margin when we did this in D-2025-0002'. A sentence with no id is a sentence "
@@ -80,7 +90,7 @@ OPINION_SYSTEM = (
     "4. Be direct and specific. This is a colleague flagging a real risk, not a consultant.\n"
     "5. If the recalled decisions do not cover this situation, say so plainly instead of stretching.\n"
     "6. Never claim to know something the recalled records do not state.\n"
-    "Return JSON."
+    "Start your answer with HEADLINE: and follow the format exactly."
 )
 
 BASELINE_SYSTEM = (
@@ -267,3 +277,146 @@ async def redflag_reflect(text: str, *, promoted: set[str] | None = None) -> dic
     base["reflect"] = r
     base["engine"]["engine"] = "hindsight-reflect"
     return base
+
+
+# ------------------------------------------------------------------ streaming red-flag
+
+async def redflag_stream(text: str, *, promoted: set[str] | None = None):
+    """SSE generator for the chat UI.
+
+    Event sequence, so the frontend can render the reasoning as it happens rather than a spinner:
+        status  -> classifying (Laya + LLM extract)
+        classify-> domain, decision_type, laya signals, reversibility
+        status  -> recalling precedents
+        precedents -> the cited cards, with outcome and proof
+        status  -> writing the review
+        delta   -> answer text, streamed
+        done    -> engine block (llm_calls, citations, unverified ids)
+        error   -> anything that went wrong, with the partial answer preserved
+
+    The verdict is computed before the prose, so the UI can show the risk banner while the text streams.
+    """
+    s = settings()
+    now = datetime.now(timezone.utc)
+
+    def ev(kind: str, **data) -> str:
+        return "data: " + json.dumps({"type": kind, **data}, default=str) + "\n\n"
+
+    try:
+        yield ev("status", message="classifying the decision", step="classify")
+        attrs, cmeta = await classify(text)
+        domain, dtype = attrs.get("domain"), attrs.get("decision_type")
+        yield ev("classify", domain=domain, decision_type=dtype,
+                 intent=attrs.get("intent"), rationale=attrs.get("rationale"),
+                 laya=attrs.get("laya"), llm_calls=cmeta.get("llm_calls", 0))
+
+        yield ev("status", message="recalling past decisions", step="recall")
+        q = " ".join([attrs.get("intent") or "", attrs.get("rationale") or "",
+                      " ".join(attrs.get("keywords") or []), text])[:1200]
+        recalled = await hindsight.recall(q, budget="mid", max_tokens=1800, bank_id=s.biz_bank_id)
+
+        ranked = rank(recalled, now=now, promoted=promoted, service=domain, change_class=dtype,
+                      min_proof=s.min_proof)
+        relaxed = False
+        if not ranked:
+            ranked = rank(recalled, now=now, promoted=promoted, service=domain,
+                          change_class=None, min_proof=s.min_proof)
+            relaxed = bool(ranked)
+        precs = ranked[:6]
+        v = verdict(precs, service=domain, change_class=dtype)
+
+        all_ranked = rank(recalled, now=now, promoted=promoted, service=None, change_class=None, min_proof=0)
+        seen = {p["launch_id"] for p in precs}
+        declined = []
+        for d in all_ranked:
+            if d["launch_id"] in seen or not d["launch_id"]:
+                continue
+            declined.append({"launch_id": d["launch_id"], "domain": d["service"],
+                             "decision_type": d["change_class"], "proof_count": d["proof_count"],
+                             "reason": (f"same area ({d['service']}), different kind of decision"
+                                        if d["service"] == domain else
+                                        f"different area ({d['service']} / {d['change_class']})")})
+            if len(declined) >= 3:
+                break
+
+        yield ev("verdict", risk=v["risk"], confidence=v["confidence"],
+                 no_precedent=v["no_precedent"], rules=v["rules"], relaxed=relaxed)
+        yield ev("precedents", precedents=[
+            {"launch_id": p["launch_id"], "date": p["date"], "domain": p["service"],
+             "decision_type": p["change_class"], "outcome": p["outcome"], "is_mirror": p["is_mirror"],
+             "proof_count": p["proof_count"], "attribution_ok": p.get("attribution_ok", True),
+             "text": (p.get("text") or "")[:400]}
+            for p in precs], declined=declined)
+
+        if v["no_precedent"]:
+            msg = ("No past decision in this company covers this. I am not going to invent a precedent. "
+                   f"{len(declined)} neighbouring decisions were considered and declined.")
+            for chunk in _chunks(msg):
+                yield ev("delta", text=chunk)
+            yield ev("done", engine={"ranker": "deterministic", "llm_calls": cmeta.get("llm_calls", 0),
+                                     "no_precedent": True, "model": s.llm_model},
+                     facts_used=[], citations_in_prose=[], attribution_unverified=[])
+            return
+
+        yield ev("status", message="writing the review", step="write")
+        user = (
+            f"DECISION THE USER IS CONSIDERING\n{text}\n\n"
+            f"CLASSIFIED AS: domain={domain}, type={dtype}\n"
+            f"THEIR STATED RATIONALE: {attrs.get('rationale') or '(none given)'}\n\n"
+            f"THE COMPANY'S OWN RECALLED PAST DECISIONS\n{_block(precs)}\n\n"
+            "Write the review in the HEADLINE/WHY/DIFFERENCE/GUARDRAIL/QUESTIONS format. "
+            "Cite decision ids inline in every sentence."
+        )
+        buf = ""
+        async for piece in chat_stream(STREAM_OPINION_SYSTEM, user, max_tokens=3000):
+            buf += piece
+            yield ev("delta", text=piece)
+
+        op = parse_review(buf)
+        facts = sorted({p["launch_id"] for p in precs if p["launch_id"]})
+        prose = buf if not op else " ".join(str(x) for x in op.values() if x)
+        cited = sorted({f for f in facts if f in prose})
+        yield ev("done", opinion=op,
+                 engine={"ranker": "deterministic", "llm_calls": cmeta.get("llm_calls", 0) + 1,
+                         "model": s.llm_model, "streamed": True},
+                 facts_used=facts, citations_in_prose=cited,
+                 uncited_facts=sorted(set(facts) - set(cited)),
+                 attribution_unverified=[p["launch_id"] for p in precs if not p.get("attribution_ok", True)])
+    except Exception as e:  # noqa: BLE001
+        yield ev("error", message=f"{type(e).__name__}: {e}")
+
+
+def _chunks(s: str, n: int = 28):
+    for i in range(0, len(s), n):
+        yield s[i:i + n]
+
+
+def parse_review(text: str) -> dict[str, Any]:
+    """Parse the delimited review format. Tolerant: a missing section becomes None, never a crash."""
+    import re as _re
+    out: dict[str, Any] = {"headline": None, "why": None, "differentiating_detail": None,
+                           "suggested_guardrail": None, "open_questions": []}
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = _re.sub(r"^```[a-zA-Z]*\n?", "", t)
+        t = _re.sub(r"\n?```$", "", t).strip()
+
+    def section(label: str, following: tuple[str, ...]) -> str | None:
+        stop = "|".join(f"^{n}:" for n in following) or "$^"
+        m = _re.search(rf"^{label}:\s*(.*?)(?={stop}|\Z)", t, _re.S | _re.M | _re.I)
+        if not m:
+            return None
+        val = m.group(1).strip()
+        return None if (not val or val.upper().startswith("NONE")) else val
+
+    out["headline"] = section("HEADLINE", ("WHY", "DIFFERENCE", "GUARDRAIL", "QUESTIONS"))
+    out["why"] = section("WHY", ("DIFFERENCE", "GUARDRAIL", "QUESTIONS"))
+    out["differentiating_detail"] = section("DIFFERENCE", ("GUARDRAIL", "QUESTIONS"))
+    out["suggested_guardrail"] = section("GUARDRAIL", ("QUESTIONS",))
+    qs = section("QUESTIONS", ())
+    if qs:
+        out["open_questions"] = [x.strip("-\u2022 ").strip() for x in qs.splitlines() if x.strip("-\u2022 ").strip()]
+    # a headline is the minimum viable answer
+    return out if out["headline"] else {"headline": t[:400] if t else None, "why": None,
+                                        "differentiating_detail": None,
+                                        "suggested_guardrail": None, "open_questions": []}

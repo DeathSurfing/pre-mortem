@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -200,6 +201,38 @@ async def biz_redflag(body: RedflagBody) -> dict[str, Any]:
                                          seed=body.seed_classification)
     out["ledger_promoted"] = sorted(promoted)
     return out
+
+
+@app.get("/api/biz/redflag/stream")
+async def biz_redflag_stream(prompt: str = Query("", description="the decision text"),
+                             preset: str | None = None,
+                             use_ledger: bool = True):
+    """Server-sent events: status -> classify -> precedents -> verdict -> delta* -> done.
+
+    Streaming matters here because the pipeline has real stages (Laya + extract, recall, then prose), and
+    the UI can show each one instead of a spinner. The verdict arrives before the prose, so the risk
+    banner renders while the text is still being written.
+    """
+    text = prompt
+    if preset and not prompt.strip():
+        match = bizcorpus.PROMPT_BY_KEY.get(preset)
+        if match is None:
+            raise HTTPException(404, f"unknown preset {preset}")
+        text = match.text
+    if not text.strip():
+        raise HTTPException(422, "provide a prompt")
+    promoted = await bizledger.promoted_classes() if use_ledger else set()
+
+    async def gen():
+        yield "data: " + json.dumps({"type": "status", "message": "connected", "step": "start"}) + "\n\n"
+        if promoted:
+            yield "data: " + json.dumps({"type": "ledger", "promoted": sorted(promoted)}) + "\n\n"
+        async for chunk in bizlookalike.redflag_stream(text, promoted=promoted):
+            yield chunk
+
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
 
 
 @app.get("/api/biz/ledger")

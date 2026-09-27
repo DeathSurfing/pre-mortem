@@ -1,32 +1,41 @@
 services:
-  # Hindsight runs on Vectorize Cloud (api.hindsight.vectorize.io), so there is no memory container.
-  # Our LLM for the flip-detail sentence is OpenCode Go; Hindsight's own extraction model is chosen on
-  # the Cloud side, which is the one thing we cannot configure there.
+  # Hindsight runs on Vectorize Cloud, so there is no memory container here.
+  # Laya (the local System One classifier) is baked into the api image at build time, so there is no
+  # model-serving container either. Two containers total.
   api:
     build: ./api
     environment:
+      # memory
       HINDSIGHT_API_URL: ${HINDSIGHT_API_URL:-https://api.hindsight.vectorize.io}
       HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY}
       HINDSIGHT_BANK_ID: ${HINDSIGHT_BANK_ID:-premortem}
+      HINDSIGHT_BIZ_BANK_ID: ${HINDSIGHT_BIZ_BANK_ID:-bizdecisions}
+      # our own LLM calls (flip detail / review prose), streamed
       OPENCODE_GO_API_KEY: ${OPENCODE_GO_API_KEY}
       OPENCODE_GO_BASE_URL: ${OPENCODE_GO_BASE_URL:-https://opencode.ai/zen/go/v1}
       OPENCODE_SESSION: ${OPENCODE_SESSION:-pre-mortem-prod}
       LLM_MODEL: ${LLM_MODEL:-deepseek-v4.1-flash}
-      # left empty on purpose: the 9Router fallback lane returned "Model is unavailable" under load,
-      # and a dead fallback doubles latency on every call.
+      # deliberately empty: the 9Router fallback lane returned "Model is unavailable" under load, and a
+      # dead fallback doubles latency on every call.
       LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-}
-      NINEROUTER_URL: ${NINEROUTER_URL}
-      NINEROUTER_API_KEY: ${NINEROUTER_API_KEY}
+      # Laya: local classifier. Weights are baked into the image; LAYA_LOCAL_DIR is exported by the
+      # image entrypoint from /models/laya_path, so it is intentionally not set here.
+      LAYA_ENABLED: ${LAYA_ENABLED:-1}
+      LAYA_REPO: ${LAYA_REPO:-techtheist/laya-onnx}
+      LAYA_SUBFOLDER: ${LAYA_SUBFOLDER:-en}
+      LAYA_ONNX_FILE: ${LAYA_ONNX_FILE:-model_int4.onnx}
       MIN_PROOF: ${MIN_PROOF:-1}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
     expose:
       - "8000"
     healthcheck:
+      # start_period is generous on purpose: the first Laya load builds the ONNX session (~9s measured,
+      # more on a cold host) and the healthcheck must not fail the container during that window.
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 6
-      start_period: 30s
+      start_period: 90s
 
   web:
     build:

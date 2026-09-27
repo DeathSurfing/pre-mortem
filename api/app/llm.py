@@ -154,3 +154,64 @@ async def chat_text(
             return text, meta
     except Exception as e:  # noqa: BLE001
         return None, {**meta, "error": f"{type(e).__name__}: {e}"}
+
+
+async def chat_stream(
+    system: str,
+    user: str,
+    *,
+    model: str | None = None,
+    temperature: float = 0.3,
+    max_tokens: int = 3000,
+):
+    """Async generator of answer-text deltas.
+
+    Verified on OpenCode Go: the SSE stream emits `reasoning_content` deltas BEFORE `content`. Only
+    `content` is yielded, so the model's thinking is never shown to the user. The raw stream looks like:
+
+        data: {"choices":[{"delta":{"role":"assistant","content":"","reasoning_content":"We"}}]}
+        ...
+        data: {"choices":[{"delta":{"content":"Not as described"}}]}
+        data: [DONE]
+    """
+    s = settings()
+    if not s.llm_key:
+        yield "[no OPENCODE_GO_API_KEY configured]"
+        return
+    body = {
+        "model": model or s.llm_model,
+        "stream": True,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+    }
+    headers = {
+        "Authorization": f"Bearer {s.llm_key}",
+        "Content-Type": "application/json",
+        "x-opencode-session": s.opencode_session,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=20.0)) as hx:
+            async with hx.stream("POST", f"{s.llm_base_url}/chat/completions",
+                                 headers=headers, json=body) as r:
+                if r.status_code >= 400:
+                    detail = (await r.aread()).decode()[:200]
+                    yield f"[upstream error {r.status_code}: {detail}]"
+                    return
+                async for line in r.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    payload = line[5:].strip()
+                    if payload == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(payload)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
+                    # content only: reasoning_content is the model thinking out loud
+                    piece = delta.get("content")
+                    if piece:
+                        yield piece
+    except Exception as e:  # noqa: BLE001
+        yield f"[stream failed: {type(e).__name__}: {e}]"
