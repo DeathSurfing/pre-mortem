@@ -20,8 +20,15 @@ function PrecedentCard({ p, top }: { p: Assessment["precedents"][number]; top: b
       <div className="head">
         <span className="lid">{p.launch_id}</span>
         <span className="dim">{p.date}</span>
-        <span className="badge proof" title="Hindsight proof count for this memory">
-          proof {p.proof_count}
+        <span
+          className="badge proof"
+          title={
+            p.memory_type === "observation"
+              ? "Hindsight consolidated this into a standing belief across several launches, so it carries more weight than one raw record"
+              : "raw extracted record for this single launch"
+          }
+        >
+          {p.memory_type === "observation" ? "consolidated" : "raw"} · proof {p.proof_count}
         </span>
         <Trend trend={p.trend} />
         <Outcome outcome={p.outcome} isMirror={p.is_mirror} />

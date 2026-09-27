@@ -150,6 +150,7 @@ button.ghost { background: transparent; }
   color: var(--ink-mute); white-space: nowrap;
 }
 .badge.proof { border-color: #3a465a; color: #a9b8c9; }
+.badge.proof.consolidated { border-color: var(--accent); color: var(--accent); }
 .badge.incident { border-color: var(--risk-high); color: var(--risk-high); }
 .badge.clean { border-color: var(--risk-low); color: var(--risk-low); }
 .badge.degraded { border-color: var(--risk-medium); color: var(--risk-medium); }

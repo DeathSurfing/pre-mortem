@@ -358,3 +358,26 @@ materialised outcome traces to a pattern.
    tight budget degrades instead of erroring.
 3. `deepseek-v4-flash` and `deepseek-flash` spend far fewer reasoning tokens, so they are the cheaper
    choice when latency matters more than prose quality.
+
+### 9.11 Observations: empty metadata, and a provenance caveat
+
+Consolidated `observation` memories come back with **empty `metadata`** (verified: `metadata: {}`), so
+launch attributes must be recovered from their text, which states them plainly
+("Launch L-2026-0034 for payments-service on 2026-04-21 involved a configuration change...").
+
+Two consequences, both handled:
+
+1. `rank.recover_attrs()` parses the launch id, service and change class from the text, with a synonym
+   map, because observations describe changes in prose ("a configuration change", "a library upgrade")
+   rather than with our class slugs. Without the synonym map every observation is dropped by the strict
+   service+change-class filter, which is what silently made every proof count 1 and no trend badge
+   renderable.
+2. Observations are weighted as stronger evidence than a single raw fact (`TYPE_WEIGHT`), since
+   consolidation only produces one when several launches share the shape. The UI labels them
+   **"consolidated"** versus **"raw"** so a reader can tell a standing belief from one record.
+
+**Caveat, stated rather than hidden:** consolidation can attach a launch id loosely. One observation
+described a payments-service pool change while citing `L-2026-0034`, which in the corpus is an
+auth-service launch. So an observation's id is a *hint*, not a citation-grade reference. Raw `world`
+facts always carry exact metadata and are the citation-grade source; the UI shows the type for exactly
+this reason. Do not quote an observation's launch id on camera as the precedent, quote the raw fact.

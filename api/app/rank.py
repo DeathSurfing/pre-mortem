@@ -5,11 +5,70 @@ Every score component is named so the UI can show the arithmetic.
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
 TREND_PENALTY = {"weakening": -2.0, "stale": -3.0, "new": 0.0, "stable": 0.0, "strengthening": 1.0}
 LEDGER_BOOST = 3.0
+
+# Observations produced by consolidation carry EMPTY metadata (verified: `metadata: {}`), so the
+# launch id and service have to be recovered from their text, which states them verbatim
+# ("Launch L-2026-0034 for payments-service on 2026-04-21 involved ...").
+_LAUNCH_RE = re.compile(r"\bL-\d{4}-\d{4}\b")
+_SERVICE_RE = re.compile(r"\bfor ([a-z][a-z0-9-]{2,40}?(?:-service|-api|-worker|-index|-pipeline))\b")
+_CLASSES = ("config-only", "dependency-bump", "schema-migration", "flag-flip", "infra-change")
+
+# Consolidated observations describe the change in prose ("a configuration change", "a library upgrade"),
+# not with our internal class slug, so a synonym map is required or every observation is dropped by the
+# strict service+class filter. Order matters: the most specific phrase wins.
+_CLASS_SYNONYMS: tuple[tuple[str, str], ...] = (
+    ("configuration-only", "config-only"),
+    ("configuration change", "config-only"),
+    ("config change", "config-only"),
+    ("configuration", "config-only"),
+    ("schema migration", "schema-migration"),
+    ("migration", "schema-migration"),
+    ("feature flag", "flag-flip"),
+    ("flag", "flag-flip"),
+    ("dependency", "dependency-bump"),
+    ("library upgrade", "dependency-bump"),
+    ("package upgrade", "dependency-bump"),
+    ("infrastructure", "infra-change"),
+    ("node pool", "infra-change"),
+    ("region", "infra-change"),
+)
+
+
+def recover_attrs(mem: dict) -> dict:
+    """Best-effort attributes for a memory, from metadata when present, else parsed from its text."""
+    meta = dict(mem.get("metadata") or {})
+    text = mem.get("text") or ""
+    if not meta.get("launch_id"):
+        hit = _LAUNCH_RE.search(text)
+        if hit:
+            meta["launch_id"] = hit.group(0)
+    if not meta.get("service"):
+        hit = _SERVICE_RE.search(text)
+        if hit:
+            meta["service"] = hit.group(1)
+    if not meta.get("change_class"):
+        low = text.lower()
+        for c in _CLASSES:
+            if c in low:
+                meta["change_class"] = c
+                break
+        else:
+            for phrase, slug in _CLASS_SYNONYMS:
+                if phrase in low:
+                    meta["change_class"] = slug
+                    break
+    return meta
+
+
+# A consolidated observation is a standing belief that many launches share this shape, so it is
+# stronger evidence than one raw fact. This is where Hindsight's proof count becomes visible.
+TYPE_WEIGHT = {"observation": 2, "experience": 1, "world": 1}
 
 
 def _parse(ts: Any) -> datetime | None:
@@ -40,9 +99,10 @@ def proof_count(mem: dict[str, Any]) -> int:
     We take it from the memory's own metadata/type rather than inventing a number:
     observations carry Hindsight's own consolidated proof; world facts count as 1.
     """
-    if (mem.get("type") or "") == "observation":
-        return int(mem.get("proof_count") or 2)
-    return 1
+    base = TYPE_WEIGHT.get((mem.get("type") or "").lower(), 1)
+    if isinstance(mem.get("proof_count"), int) and mem["proof_count"] > 0:
+        return max(base, int(mem["proof_count"]))
+    return base
 
 
 def score(mem: dict[str, Any], now: datetime, promoted: set[str] | None = None) -> dict[str, float]:
@@ -73,7 +133,9 @@ def rank(memories: list[dict[str, Any]], *, now: datetime | None = None,
     now = now or datetime.now(timezone.utc)
     out = []
     for m in memories:
-        if not (m.get("metadata") or {}).get("launch_id"):
+        attrs = recover_attrs(m)
+        m = {**m, "metadata": attrs}
+        if not attrs.get("launch_id"):
             continue  # unattributable memory: cannot be cited as a precedent
         meta = m.get("metadata") or {}
         # STRICT: a precedent must carry the same service AND change class. A memory with no
