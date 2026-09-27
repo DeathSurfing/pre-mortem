@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { ArrowUp, BookOpen, CircleAlert, CircleCheck, TriangleAlert } from "lucide-react";
 import {
   api,
   streamRedflag,
@@ -10,89 +11,88 @@ import {
   type Precedent,
   type PromptPreset,
 } from "@/lib/api";
+import { DecisionId, Label, Rule } from "@/components/editorial";
+import { cn } from "@/lib/utils";
 
-/* ---------------------------------------------------------------- pieces */
+/* ------------------------------------------------------------------ atoms */
 
-function RiskBanner({ risk, confidence, noPrecedent, rules }: {
-  risk: string; confidence: number; noPrecedent: boolean; rules: string;
-}) {
-  const label = noPrecedent ? "no precedent" : `${risk} risk`;
+const RISK_COPY: Record<string, { label: string; tone: string; wash: string }> = {
+  high: { label: "High risk", tone: "text-risk-high", wash: "bg-[var(--risk-high-wash)]" },
+  medium: { label: "Worth a look", tone: "text-risk-medium", wash: "bg-[var(--risk-medium-wash)]" },
+  low: { label: "Low risk", tone: "text-risk-low", wash: "bg-[var(--risk-low-wash)]" },
+  unknown: { label: "No precedent", tone: "text-risk-unknown", wash: "bg-[var(--risk-unknown-wash)]" },
+};
+
+function RiskMark({ risk }: { risk: string }) {
+  const Icon = risk === "high" ? CircleAlert : risk === "medium" ? TriangleAlert : risk === "low" ? CircleCheck : BookOpen;
+  const copy = RISK_COPY[risk] ?? RISK_COPY.unknown;
   return (
-    <div className={`banner risk-${risk}`}>
-      <div>
-        <div className="risk">{label}</div>
-        <div className="dim">{rules}</div>
-      </div>
-      <div className="conf">
-        <b>{noPrecedent ? "—" : confidence.toFixed(2)}</b>
-        <span className="dim">confidence from evidence</span>
-      </div>
-    </div>
+    <span className={cn("inline-flex items-center gap-1.5 font-medium", copy.tone)}>
+      <Icon className="size-[15px]" strokeWidth={2} />
+      {copy.label}
+    </span>
   );
 }
 
-function LayaPanel({ laya, domain, dtype }: { laya: LayaSignals | null; domain: string; dtype: string }) {
-  if (!laya) return null;
-  const pct = (v: number | null) => (v === null ? "—" : `${(v * 100).toFixed(0)}%`);
+/** A precedent, typeset as a citation: id in mono, outcome as a margin note. */
+function Citation({ p }: { p: Precedent }) {
+  const bad = p.outcome === "bad" || p.outcome === "mixed" || p.outcome === "incident" || p.outcome === "degraded";
   return (
-    <div className="laya">
-      <div className="laya-head">
-        <span className="badge">classified locally by Laya</span>
-        <span className="mono">{domain} / {dtype}</span>
-      </div>
-      <div className="laya-grid">
-        <div>
-          <span className="dim">domain certainty</span>
-          <b>{pct(laya.domain_confidence)}</b>
-        </div>
-        <div>
-          <span className="dim">reversibility</span>
-          <b>{laya.reversibility_label ?? "—"}</b>
-        </div>
-        <div>
-          <span className="dim">value given away</span>
-          <b>{pct(laya.gives_value_without_commitment)}</b>
-        </div>
-        <div>
-          <span className="dim">blast radius</span>
-          <b>{pct(laya.is_high_blast_radius)}</b>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PrecedentCard({ p, top }: { p: Precedent; top: boolean }) {
-  return (
-    <div className={`prec${top ? " top" : ""}${p.attribution_ok ? "" : " suspect"}`}>
-      <div className="head">
-        <span className="lid">{p.launch_id}</span>
-        <span className="dim">{p.date}</span>
-        <span className="badge proof" title="how much evidence stands behind this">
-          evidence {p.proof_count}
-        </span>
-        {p.is_mirror ? (
-          <span className="badge mirror">near-identical, went fine</span>
-        ) : p.outcome ? (
-          <span className={`badge ${p.outcome}`}>{p.outcome}</span>
-        ) : (
-          <span className="badge">outcome not recorded</span>
-        )}
-        {!p.attribution_ok && (
-          <span className="badge suspect" title="this record's id could not be verified against the corpus">
-            id unverified
-          </span>
-        )}
-        <span className="dim" style={{ marginLeft: "auto" }}>
+    <li className="fade-up py-3.5">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <DecisionId id={p.launch_id} className="font-medium text-ink" />
+        <span className="text-[12.5px] text-ink-faint">{p.date}</span>
+        <span className="text-[12.5px] text-ink-muted">
           {p.domain} · {p.decision_type}
         </span>
+        {p.is_mirror ? (
+          <span className="text-[12.5px] font-medium text-risk-low">near-identical, went fine</span>
+        ) : bad ? (
+          <span className="text-[12.5px] font-medium text-risk-high">went badly</span>
+        ) : p.outcome ? (
+          <span className="text-[12.5px] font-medium text-risk-low">{p.outcome}</span>
+        ) : (
+          <span className="text-[12.5px] text-ink-faint">outcome not recorded</span>
+        )}
+        <span className="ml-auto text-[12px] text-ink-faint" title="how much evidence stands behind this">
+          evidence {p.proof_count}
+        </span>
       </div>
-      {p.text && <div className="txt">{p.text}</div>}
+      {!p.attribution_ok && (
+        <div className="mt-1.5 text-[12.5px] text-risk-medium">
+          this record&apos;s id could not be verified against the corpus, so the id is not quoted
+        </div>
+      )}
+      {p.text && <p className="mt-2 text-[14px] leading-relaxed text-ink-soft measure">{p.text}</p>}
+    </li>
+  );
+}
+
+function LayaNote({ laya, domain, dtype }: { laya: LayaSignals | null; domain: string; dtype: string }) {
+  if (!laya) return null;
+  const pct = (v: number | null) => (v === null ? "—" : `${Math.round(v * 100)}%`);
+  const rows: [string, string][] = [
+    ["area", `${domain} / ${dtype}`],
+    ["certainty", pct(laya.domain_confidence)],
+    ["reversibility", laya.reversibility_label ?? "—"],
+    ["value given away", pct(laya.gives_value_without_commitment)],
+  ];
+  return (
+    <div className="mt-5">
+      <Label>Classified locally · no API call</Label>
+      <dl className="mt-2 grid grid-cols-2 gap-x-6 gap-y-1.5 sm:grid-cols-4">
+        {rows.map(([k, v]) => (
+          <div key={k}>
+            <dt className="text-[12px] text-ink-faint">{k}</dt>
+            <dd className="font-mono text-[13px] text-ink-soft">{v}</dd>
+          </div>
+        ))}
+      </dl>
     </div>
   );
 }
 
-/* ---------------------------------------------------------------- the chat */
+/* ------------------------------------------------------------------ the page */
 
 type Turn = {
   id: string;
@@ -145,20 +145,16 @@ export default function Page() {
     const patch = (fn: (t: Turn) => Turn) =>
       setTurns((prev) => prev.map((t) => (t.id === id ? fn(t) : t)));
 
-    setTurns((prev) => [
-      ...prev,
-      { id, question, status: "connecting", streamed: "", busy: true },
-    ]);
+    setTurns((prev) => [...prev, { id, question, status: "connecting", streamed: "", busy: true }]);
 
     try {
       await streamRedflag(question, (e) => {
         if (e.type === "status") patch((t) => ({ ...t, status: e.message }));
         else if (e.type === "classify")
-          patch((t) => ({ ...t, domain: e.domain, dtype: e.decision_type, laya: e.laya, status: "recalling" }));
+          patch((t) => ({ ...t, domain: e.domain, dtype: e.decision_type, laya: e.laya, status: "recalling past decisions" }));
         else if (e.type === "verdict")
-          patch((t) => ({ ...t, risk: e.risk, confidence: e.confidence, noPrecedent: e.no_precedent, rules: e.rules, status: "writing" }));
-        else if (e.type === "precedents")
-          patch((t) => ({ ...t, precedents: e.precedents, declined: e.declined }));
+          patch((t) => ({ ...t, risk: e.risk, confidence: e.confidence, noPrecedent: e.no_precedent, rules: e.rules, status: "writing the review" }));
+        else if (e.type === "precedents") patch((t) => ({ ...t, precedents: e.precedents, declined: e.declined }));
         else if (e.type === "delta") patch((t) => ({ ...t, streamed: t.streamed + e.text }));
         else if (e.type === "done")
           patch((t) => ({
@@ -180,183 +176,291 @@ export default function Page() {
     }
   }
 
-  const laHealth = (health?.laya ?? null) as null | {
-    enabled?: boolean;
-    loaded?: boolean;
-    error?: string | null;
-  };
+  const laHealth = (health?.laya ?? null) as null | { enabled?: boolean; loaded?: boolean; error?: string | null };
+  const empty = turns.length === 0;
 
   return (
-    <div className="shell chat-shell">
-      <div className="topbar">
-        <h1>pre-mortem</h1>
-        <span className="tag">flag a decision before you make it, from what your company already learned</span>
-        <span className="spacer" />
-        {laHealth && (
-          <span className="dim" title={String(laHealth.error || "Laya classifies each decision locally, offline")}>
-            laya {laHealth.loaded ? "ready" : laHealth.enabled ? "loading" : "off"}
+    <div className="min-h-screen bg-paper">
+      {/* masthead */}
+      <header className="rule-b">
+        <div className="mx-auto flex max-w-[1180px] items-center gap-4 px-6 py-4">
+          <span className="font-display text-[17px] font-semibold tracking-tight text-ink">
+            pre&#8209;mortem
           </span>
-        )}
-        <button className="ghost" onClick={() => setShowEvidence((v) => !v)}>
-          {showEvidence ? "hide" : "show"} evidence
-        </button>
-      </div>
+          <span className="hidden text-[13px] text-ink-muted sm:inline">
+            what your company already learned
+          </span>
+          <div className="ml-auto flex items-center gap-4">
+            {laHealth && (
+              <span className="hidden text-[12px] text-ink-faint md:inline" title={laHealth.error || "Laya classifies each decision locally, offline"}>
+                local classifier {laHealth.loaded ? "ready" : laHealth.enabled ? "loading" : "off"}
+              </span>
+            )}
+            <button
+              onClick={() => setShowEvidence((v) => !v)}
+              className="text-[12.5px] text-ink-muted underline decoration-rule underline-offset-4 transition-colors hover:text-ink"
+            >
+              {showEvidence ? "hide" : "show"} evidence
+            </button>
+          </div>
+        </div>
+      </header>
 
+      {/* ledger strip: the calibration signal, always visible */}
       {ledger && ledger.promoted_classes.length > 0 && (
-        <div className="ledgerbar">
-          <span className="dim">this company has been burned before on:</span>
-          {ledger.promoted_classes.map((c) => (
-            <span key={c} className="badge promoted">{c}</span>
-          ))}
-          <span className="dim">
-            {ledger.ignored} of {ledger.flags} past warnings were ignored, {ledger.costed} of those cost something
-          </span>
+        <div className="bg-[var(--paper-sunk)] rule-b">
+          <div className="mx-auto flex max-w-[1180px] flex-wrap items-center gap-x-3 gap-y-1 px-6 py-2.5 text-[12.5px] text-ink-muted">
+            <span className="text-ink-faint">This company was warned and went ahead anyway on</span>
+            {ledger.promoted_classes.map((c) => (
+              <span key={c} className="font-mono text-[12px] text-ink-soft">
+                {c}
+              </span>
+            ))}
+            <span className="text-ink-faint">
+              {ledger.ignored} of {ledger.flags} warnings ignored, {ledger.costed} of those cost something
+            </span>
+          </div>
         </div>
       )}
 
-      <div className="thread">
-        {turns.length === 0 && (
-          <div className="empty">
-            <h2>Ask about a decision you are considering</h2>
-            <p className="dim">
-              It searches what this company has actually done before and flags what went wrong, citing each
-              past decision by id. No precedent means it says so instead of inventing one.
-            </p>
-            <div className="presets">
-              {presets.map((p) => (
-                <button key={p.key} className="preset-chip" onClick={() => ask(p.text)}>
-                  <b>{p.label}</b>
-                  <span className="dim">{p.expect}</span>
-                </button>
-              ))}
+      <main className="mx-auto max-w-[1180px] px-6 pb-56">
+        {empty && (
+          <div className="grid gap-12 py-14 lg:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="measure">
+              <h1 className="font-display text-[34px] font-normal leading-[1.15] tracking-tight text-ink sm:text-[40px]">
+                Flag a decision before you make it.
+              </h1>
+              <p className="mt-5 text-[16px] leading-relaxed text-ink-soft">
+                Describe what you are considering. It searches what this company has actually done before,
+                names what went wrong, and cites every past decision by id.
+              </p>
+              <p className="mt-3 text-[16px] leading-relaxed text-ink-soft">
+                When there is no precedent, it says so instead of guessing.
+              </p>
+
+              <div className="mt-9">
+                <Label>Try one</Label>
+                <div className="mt-3 divide-y divide-[var(--rule)] rule-t rule-b">
+                  {presets.map((p) => (
+                    <button
+                      key={p.key}
+                      onClick={() => ask(p.text)}
+                      className="group flex w-full items-baseline gap-4 py-3.5 text-left transition-colors hover:bg-[var(--paper-sunk)]"
+                    >
+                      <span className="flex-1">
+                        <span className="block text-[15px] text-ink group-hover:text-accent-deep">{p.label}</span>
+                        <span className="mt-0.5 block text-[12.5px] text-ink-faint">{p.expect}</span>
+                      </span>
+                      <ArrowUp className="size-4 shrink-0 rotate-45 text-ink-faint transition-colors group-hover:text-accent" />
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
+
+            {/* the apparatus, stated up front */}
+            <aside className="lg:pt-3">
+              <Label>How it works</Label>
+              <ol className="mt-3 space-y-3 text-[13.5px] leading-relaxed text-ink-muted">
+                <li>
+                  <span className="text-ink-soft">Classified locally.</span> A small model reads the decision
+                  and returns a calibrated area, reversibility, and whether value is being given away.
+                </li>
+                <li>
+                  <span className="text-ink-soft">Remembered.</span> Hindsight recalls the company&apos;s own
+                  past decisions, with how much evidence stands behind each.
+                </li>
+                <li>
+                  <span className="text-ink-soft">Decided, not guessed.</span> The verdict comes from what
+                  actually happened to those past decisions. No model chooses the risk level.
+                </li>
+                <li>
+                  <span className="text-ink-soft">Written.</span> Only then does a model write the prose, and
+                  every sentence carries a decision id.
+                </li>
+              </ol>
+            </aside>
           </div>
         )}
 
         {turns.map((t) => (
-          <div key={t.id} className="turn">
-            <div className="q">{t.question}</div>
+          <article key={t.id} className="py-11 rule-b">
+            {/* the question, set as a pull quote */}
+            <h2 className="measure font-display text-[22px] font-normal leading-snug text-ink sm:text-[25px]">
+              {t.question}
+            </h2>
 
-            {t.status !== "done" && t.status !== "error" && (
-              <div className="stage">
-                <span className="spin" />
-                <span className="dim">{t.status}…</span>
+            {t.busy && (
+              <div className="mt-4 flex items-center gap-2.5 text-[13px] text-ink-muted">
+                <span className="inline-block size-[7px] animate-pulse rounded-full bg-accent" />
+                {t.status}…
               </div>
             )}
 
-            {t.error && <div className="warn">{t.error}</div>}
+            {t.error && (
+              <div className="measure mt-4 border-l-2 border-risk-high bg-[var(--risk-high-wash)] px-4 py-3 text-[13.5px] text-ink-soft">
+                {t.error}
+              </div>
+            )}
 
             {t.risk && (
-              <RiskBanner risk={t.risk} confidence={t.confidence ?? 0} noPrecedent={!!t.noPrecedent} rules={t.rules ?? ""} />
-            )}
-
-            {showEvidence && t.laya !== undefined && t.domain && (
-              <LayaPanel laya={t.laya ?? null} domain={t.domain} dtype={t.dtype ?? ""} />
-            )}
-
-            {t.opinion?.headline && (
-              <div className="answer">
-                <p className="headline">{t.opinion.headline}</p>
-                {t.opinion.why && <p className="why">{t.opinion.why}</p>}
-                {t.opinion.differentiating_detail && (
-                  <div className="flip">
-                    <div className="h">the difference · not a similarity match</div>
-                    <p className="detail">{t.opinion.differentiating_detail}</p>
-                  </div>
+              <div className="mt-5 flex flex-wrap items-baseline gap-x-5 gap-y-2">
+                <RiskMark risk={t.risk} />
+                {!t.noPrecedent && (
+                  <span className="font-mono text-[13px] text-ink-faint">
+                    confidence {t.confidence?.toFixed(2)}
+                  </span>
                 )}
-                {t.opinion.suggested_guardrail && (
-                  <div className="guard">
-                    <b>make it safe:</b> {t.opinion.suggested_guardrail}
-                  </div>
-                )}
-                {t.opinion.open_questions?.length > 0 && (
-                  <div className="qs">
-                    <div className="dim">confirm first</div>
-                    <ul>
-                      {t.opinion.open_questions.map((q, i) => (
-                        <li key={i}>{q}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
+                <span className="measure flex-1 text-[13.5px] text-ink-muted">{t.rules}</span>
               </div>
             )}
 
-            {/* while streaming, show the raw text as it arrives */}
-            {t.busy && t.streamed && (
-              <div className="answer streaming">
-                <pre>{t.streamed}</pre>
-                <span className="caret" />
+            {showEvidence && t.domain && <LayaNote laya={t.laya ?? null} domain={t.domain} dtype={t.dtype ?? ""} />}
+
+            {/* the review */}
+            {(t.opinion?.headline || t.streamed) && (
+              <div className="mt-6 grid gap-x-12 gap-y-8 lg:grid-cols-[minmax(0,1fr)_360px]">
+                <div className="measure prose-editorial">
+                  {t.opinion?.headline ? (
+                    <>
+                      <p className="font-display !mb-4 text-[19px] leading-snug text-ink">
+                        {t.opinion.headline}
+                      </p>
+                      {t.opinion.why && <p className="text-[15px] leading-relaxed text-ink-soft">{t.opinion.why}</p>}
+                    </>
+                  ) : (
+                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-ink-soft">
+                      {t.streamed}
+                      {t.busy && <span className="caret" />}
+                    </p>
+                  )}
+                </div>
+
+                {/* the difference: the one claim that is not a similarity search */}
+                <aside className="lg:pt-1">
+                  {t.opinion?.differentiating_detail && (
+                    <div className="fade-up border-l-2 border-accent bg-[var(--accent-wash)] px-4 py-3.5">
+                      <Label className="text-accent-deep">The difference</Label>
+                      <p className="mt-2 text-[13.5px] leading-relaxed text-ink-soft">
+                        {t.opinion.differentiating_detail}
+                      </p>
+                    </div>
+                  )}
+                  {t.opinion?.suggested_guardrail && (
+                    <div className="mt-5">
+                      <Label>Make it safe</Label>
+                      <p className="mt-2 text-[13.5px] leading-relaxed text-ink-soft">
+                        {t.opinion.suggested_guardrail}
+                      </p>
+                    </div>
+                  )}
+                  {t.opinion?.open_questions && t.opinion.open_questions.length > 0 && (
+                    <div className="mt-5">
+                      <Label>Confirm first</Label>
+                      <ul className="mt-2 space-y-2">
+                        {t.opinion.open_questions.map((q, i) => (
+                          <li key={i} className="flex gap-2.5 text-[13.5px] leading-relaxed text-ink-soft">
+                            <span className="mt-[7px] size-1 shrink-0 rounded-full bg-ink-faint" />
+                            {q}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </aside>
               </div>
             )}
 
-            {!t.busy && !t.opinion?.headline && t.streamed && (
-              <div className="answer">
-                <pre>{t.streamed}</pre>
-              </div>
-            )}
-
+            {/* the evidence */}
             {showEvidence && t.precedents && t.precedents.length > 0 && (
-              <div className="evidence">
-                <div className="ev-head">
-                  <span className="dim">
+              <section className="mt-10">
+                <div className="flex items-baseline gap-3">
+                  <Label>What happened last time</Label>
+                  <span className="text-[12px] text-ink-faint">
                     {t.precedents.length} precedents
-                    {t.cited?.length ? ` · ${t.cited.length} cited in the answer` : ""}
+                    {t.cited?.length ? ` · ${t.cited.length} cited` : ""}
                     {t.uncited?.length ? ` · ${t.uncited.length} uncited` : ""}
                   </span>
                 </div>
-                {t.precedents.map((p, i) => (
-                  <PrecedentCard key={p.launch_id || i} p={p} top={i === 0} />
-                ))}
+                <ul className="mt-1 divide-y divide-[var(--rule)]">
+                  {t.precedents.map((p) => (
+                    <Citation key={p.launch_id} p={p} />
+                  ))}
+                </ul>
+
                 {t.unverified && t.unverified.length > 0 && (
-                  <div className="warn" style={{ marginTop: 8 }}>
-                    {t.unverified.join(", ")}: the id could not be verified against the corpus, so the
-                    content is used but the id is not quoted.
-                  </div>
+                  <p className="mt-3 text-[12.5px] text-risk-medium">
+                    {t.unverified.join(", ")}: id unverified against the corpus, so the content is used but the
+                    id is not quoted.
+                  </p>
                 )}
+
                 {t.declined && t.declined.length > 0 && (
-                  <details>
-                    <summary className="dim">also considered, declined ({t.declined.length})</summary>
-                    {t.declined.map((d) => (
-                      <div key={d.launch_id} className="declined">
-                        <div className="mono" style={{ fontSize: 12 }}>
-                          {d.launch_id} · evidence {d.proof_count}
-                        </div>
-                        <div className="r">{d.reason}</div>
-                      </div>
-                    ))}
+                  <details className="mt-5 group">
+                    <summary className="cursor-pointer text-[12.5px] text-ink-faint hover:text-ink-muted">
+                      also considered and declined ({t.declined.length})
+                    </summary>
+                    <ul className="mt-3 space-y-2.5">
+                      {t.declined.map((d) => (
+                        <li key={d.launch_id} className="text-[13px] text-ink-muted">
+                          <DecisionId id={d.launch_id} /> · evidence {d.proof_count} — {d.reason}
+                        </li>
+                      ))}
+                    </ul>
                   </details>
                 )}
-              </div>
+              </section>
             )}
-          </div>
+
+            {showEvidence && t.noPrecedent && t.declined && t.declined.length > 0 && (
+              <section className="mt-10">
+                <Label>Considered and declined</Label>
+                <ul className="mt-3 space-y-2.5">
+                  {t.declined.map((d) => (
+                    <li key={d.launch_id} className="text-[13px] text-ink-muted">
+                      <DecisionId id={d.launch_id} /> — {d.reason}
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+          </article>
         ))}
         <div ref={endRef} />
-      </div>
+      </main>
 
-      <form
-        className="composer"
-        onSubmit={(e) => {
-          e.preventDefault();
-          ask(input);
-        }}
-      >
-        <textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              ask(input);
-            }
+      {/* composer */}
+      <div className="fixed inset-x-0 bottom-0 border-t border-rule bg-paper/95 backdrop-blur">
+        <form
+          className="mx-auto flex max-w-[1180px] items-end gap-3 px-6 py-4"
+          onSubmit={(e) => {
+            e.preventDefault();
+            ask(input);
           }}
-          placeholder="Describe a decision you are considering…  (Enter to send, Shift+Enter for a new line)"
-          rows={2}
-        />
-        <button className="primary" type="submit" disabled={!input.trim()}>
-          flag it
-        </button>
-      </form>
+        >
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                ask(input);
+              }
+            }}
+            placeholder="Describe a decision you are considering…"
+            rows={1}
+            className="max-h-40 min-h-[46px] flex-1 resize-none rounded-md border border-[var(--rule-strong)] bg-paper-raised px-3.5 py-3 text-[15px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
+          />
+          <button
+            type="submit"
+            disabled={!input.trim()}
+            aria-label="Flag this decision"
+            className="flex size-[46px] shrink-0 items-center justify-center rounded-md bg-accent text-white transition-opacity hover:bg-accent-deep disabled:opacity-35"
+          >
+            <ArrowUp className="size-[18px]" strokeWidth={2.2} />
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
