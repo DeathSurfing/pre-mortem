@@ -33,6 +33,8 @@ async def seed_ledger() -> dict[str, Any]:
             ),
             "context": "pre-mortem flag ledger",
             "timestamp": l.date.isoformat(),
+            # deterministic id, so re-seeding replaces rather than accumulates
+            "document_id": f"FLAG-{l.launch_id}",
             "metadata": {
                 "kind": "flag",
                 "launch_id": l.launch_id,
@@ -49,25 +51,33 @@ async def seed_ledger() -> dict[str, Any]:
 
 
 async def summary() -> dict[str, Any]:
-    """Read the ledger back. recall only, so no LLM cost."""
-    # metadata IS preserved on every extracted fact (verified), so this filter is reliable.
-    # recall is free, so a slightly larger ask costs nothing.
+    """Read the ledger back. recall only, so no LLM cost.
+
+    One flag = one row. Hindsight extracts several facts per flag document and its consolidation adds
+    observations derived from those facts, so the raw result set repeats each flag many times (measured:
+    4 flags came back as 20 world facts). Dedupe by launch_id, keep only `world` facts, because an
+    observation about a flag is a summary of it, not a second flag.
+    """
     flags = await hindsight.recall(
         "pre-mortem tool flag raised on a launch: was it ignored, and did an incident follow",
-        types=["world", "experience", "observation"], budget="mid", max_tokens=2000)
-    rows = []
+        types=["world"], budget="mid", max_tokens=3000)
+    by_launch: dict[str, dict[str, Any]] = {}
     for f in flags:
         meta = f.get("metadata") or {}
         if meta.get("kind") != "flag":
             continue
-        rows.append({
-            "launch_id": meta.get("launch_id"),
+        lid = meta.get("launch_id")
+        if not lid or lid in by_launch:
+            continue
+        by_launch[lid] = {
+            "launch_id": lid,
             "service": meta.get("service"),
             "change_class": meta.get("change_class"),
             "ignored": meta.get("ignored") == "true",
             "costed": meta.get("costed") == "true",
             "text": (f.get("text") or "")[:220],
-        })
+        }
+    rows = sorted(by_launch.values(), key=lambda r: r["launch_id"] or "")
     ignored = [r for r in rows if r["ignored"]]
     costed = [r for r in rows if r["costed"]]
     promoted = sorted({f"{r['change_class']}@{r['service']}" for r in costed})
@@ -76,7 +86,8 @@ async def summary() -> dict[str, Any]:
         "ignored": len(ignored),
         "costed": len(costed),
         "promoted_classes": promoted,
-        "rows": rows[:12],
+        "rows": rows,
+        "note": "one row per flag; source facts are deduped by launch_id",
     }
 
 

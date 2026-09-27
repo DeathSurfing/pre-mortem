@@ -97,7 +97,10 @@ async def chat_json(
                     last_err = str(data["error"])[:180]
                     continue
                 msg = (data.get("choices") or [{}])[0].get("message") or {}
-                parsed = _extract_json(msg.get("content") or "")
+                # deepseek models return a `reasoning_content` side channel. With a small max_tokens the
+                # whole budget can be spent on reasoning and `content` comes back empty, so fall back to it.
+                body_text = (msg.get("content") or "").strip() or (msg.get("reasoning_content") or "").strip()
+                parsed = _extract_json(body_text)
                 if parsed is not None:
                     meta["model"] = m
                     meta["fallback_used"] = i > 0
@@ -145,6 +148,9 @@ async def chat_text(
                 return None, {**meta, "error": f"HTTP {r.status_code}: {r.text[:180]}"}
             data = r.json()
             msg = (data.get("choices") or [{}])[0].get("message") or {}
-            return (msg.get("content") or "").strip() or None, meta
+            text = (msg.get("content") or "").strip() or (msg.get("reasoning_content") or "").strip()
+            if not text:
+                return None, {**meta, "error": "model returned empty content (token budget spent on reasoning)"}
+            return text, meta
     except Exception as e:  # noqa: BLE001
         return None, {**meta, "error": f"{type(e).__name__}: {e}"}

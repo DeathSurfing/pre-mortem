@@ -125,7 +125,7 @@ async def assess(pending: Pending, *, memory: bool = True,
     if not memory:
         text, meta = await chat_text(BASELINE_SYSTEM,
                                      f"Change on {pending.service} ({pending.change_class}): {pending.change}. "
-                                     f"Diff: {pending.diff}.", max_tokens=220)
+                                     f"Diff: {pending.diff}.", max_tokens=3000)
         result["baseline"] = text
         result["engine"]["llm_calls"] += meta.get("llm_calls", 0)
         return result
@@ -145,7 +145,7 @@ async def assess(pending: Pending, *, memory: bool = True,
         f"RECALLED PRECEDENTS\n{_precedent_block(result['precedents'])}\n\n"
         "Return JSON with keys: precedent_launch_id, differentiating_detail, why_it_matters, cited_fix, no_precedent."
     )
-    parsed, meta = await chat_json(FLIP_SYSTEM, user)
+    parsed, meta = await chat_json(FLIP_SYSTEM, user, max_tokens=3000)
     result["engine"]["llm_calls"] += meta.get("llm_calls", 0)
     result["engine"]["model_used"] = meta.get("model")
     if meta.get("error"):

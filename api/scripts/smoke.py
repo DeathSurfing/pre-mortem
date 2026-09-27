@@ -21,14 +21,22 @@ def check(name: str, cond: bool, detail: str = "") -> None:
     print(f"  [{'PASS' if cond else 'FAIL'}] {name}" + (f" — {detail}" if detail else ""))
 
 
+# A real User-Agent is required: Cloudflare in front of the deployed API returns 403 for
+# python-urllib's default UA even though the service itself is healthy.
+UA = "pre-mortem-smoke/1.0"
+
+
 def get(url: str, timeout: int = 90):
-    with urllib.request.urlopen(url, timeout=timeout) as r:
+    req = urllib.request.Request(url, headers={"user-agent": UA, "accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
 
 def post(url: str, body: dict | None = None, timeout: int = 300):
     data = json.dumps(body or {}).encode()
-    req = urllib.request.Request(url, data=data, headers={"content-type": "application/json"}, method="POST")
+    req = urllib.request.Request(url, data=data, method="POST",
+                                 headers={"content-type": "application/json", "user-agent": UA,
+                                          "accept": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 

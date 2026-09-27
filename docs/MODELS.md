@@ -337,3 +337,24 @@ penalised for a pattern the data did not contain. Fix: per-pattern outcome seque
 `corpus.py`), with most breaks materially breaking and exactly two staying clean so precision is a real
 question rather than a guaranteed 100%. Plain (non-pattern) launches are now always clean, so every
 materialised outcome traces to a pattern.
+
+### 9.10 OpenCode Go: reasoning-token gotcha (measured)
+
+`deepseek-v4.1-flash` is a reasoning model. With a small `max_tokens` the entire budget is spent on
+`reasoning_content` and `content` comes back **empty** (or, worse, the reasoning text itself lands in
+`content` where a user can see it). Measured on the same prompt:
+
+| model | max_tokens | content | reasoning_content | completion tokens |
+|---|---|---|---|---|
+| `deepseek-v4.1-flash` | 900 | **reasoning text** (leaked) | — | — |
+| `deepseek-v4.1-flash` | 3000 | clean answer | 0 chars | 117 |
+| `deepseek-flash` | 900 | clean answer | 2248 chars | 591 |
+| `deepseek-v4-flash` | 900 | clean answer | 345 chars | 182 |
+
+**Rules:**
+1. Use `max_tokens >= 3000` for any user-visible generation. Small budgets on a reasoning model are a
+   correctness bug, not a cost saving.
+2. Always read `content` first and fall back to `reasoning_content` only if `content` is empty, so a
+   tight budget degrades instead of erroring.
+3. `deepseek-v4-flash` and `deepseek-flash` spend far fewer reasoning tokens, so they are the cheaper
+   choice when latency matters more than prose quality.
