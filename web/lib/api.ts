@@ -59,6 +59,15 @@ export type StreamEvent =
  * A no-precedent guess. Deliberately a distinct shape from Opinion: the UI renders it in its own fenced
  * block so a general-model opinion is never displayed as if it were company memory.
  */
+export type Health = {
+  ok: boolean;
+  problems: string[];
+  bank_id: string;
+  laya?: { enabled?: boolean; loaded?: boolean; error?: string | null };
+  models?: { llm?: string; fallback?: string };
+  features?: Record<string, unknown>;
+};
+
 export type GuessBlock = {
   available: boolean;
   reason?: string;
@@ -138,7 +147,7 @@ export async function streamRedflag(
 
 export const api = {
   base: BASE,
-  health: () => req<Record<string, unknown>>("/health"),
+  health: () => req<Health>("/health"),
   prompts: () => req<PromptPreset[]>("/api/biz/prompts"),
   ledger: () => req<Ledger>("/api/biz/ledger"),
   bank: () => req<Record<string, unknown>>("/api/biz/bank"),

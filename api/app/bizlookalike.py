@@ -26,7 +26,12 @@ from .config import settings
 from .llm import chat_json, chat_stream, chat_text
 from .rank import rank, verdict
 
-DOMAINS = ["pricing", "hiring", "vendor", "marketing", "launch", "buildvsbuy", "expansion", "operations", "finance", "legal"]
+DOMAINS = ["pricing", "hiring", "vendor", "marketing", "launch", "buildvsbuy", "expansion",
+           "operations", "finance", "legal", "compliance", "security", "partnership", "ops"]
+
+# The domains this company's history actually contains, derived from the corpus rather than hand-listed so
+# the two can never drift apart. Used to arbitrate the domain between the two classifiers.
+COVERED_DOMAINS = frozenset(d.domain for d in bizcorpus.corpus())
 
 CLASSIFY_SCHEMA = {
     "type": "object",
@@ -35,7 +40,7 @@ CLASSIFY_SCHEMA = {
         "domain": {"type": "string", "description": f"one of: {', '.join(DOMAINS)}"},
         "decision_type": {
             "type": "string",
-            "description": "short kebab-case label, e.g. discount, senior-hire, vendor-switch, budget-shift, build, buy, feature-ga, price-increase, new-office",
+            "description": "short kebab-case label, e.g. discount, senior-hire, vendor-switch, budget-shift, build, buy, feature-ga, price-increase, new-office, audit-finding, incident-response, reseller-agreement, datacenter-region",
         },
         "intent": {"type": "string", "description": "one sentence, what the person intends to do"},
         "rationale": {"type": "string", "description": "the reason they gave, if any"},
@@ -49,7 +54,7 @@ CLASSIFY_SYSTEM = (
     f"Choose `domain` from this list only: {', '.join(DOMAINS)}.\n"
     "Give `decision_type` as a short kebab-case label describing the mechanics of the decision "
     "(discount, senior-hire, vendor-switch, budget-shift, build, buy, feature-ga, price-increase, "
-    "new-office, and so on).\n"
+    "new-office, audit-finding, incident-response, reseller-agreement, datacenter-region, and so on).\n"
     "Do not give an opinion, a risk assessment, or advice. Classify only. Return JSON."
 )
 
@@ -198,9 +203,40 @@ async def classify(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
 
     if parsed.get("domain") not in DOMAINS:
         parsed["domain"] = "operations"
-    # Laya's domain is a calibrated choice; trust it over the LLM when Laya answered confidently
-    if laya_attrs and (laya_attrs.get("laya") or {}).get("domain_confidence", 0) >= 0.5:
-        parsed["domain"] = laya_attrs["domain"]
+    # Trust Laya's domain over the LLM ONLY when Laya is actually sure. Measured on the audit prompt, Laya
+    # returned `launch` at 0.5356 confidence (its nearest bucket, since its taxonomy has no compliance
+    # label) and that overrode a correct LLM answer, recalling launch decisions for a compliance question.
+    # 0.75 is above Laya's coin-flip band and below its real convictions (0.96-0.99 on clear prompts).
+    # Domain arbitration. Both models classify, so this is a correctness decision, not a cost one.
+    #
+    # Laya has a fixed taxonomy with no bucket for compliance, security, or partnership, and on those
+    # prompts it returns its nearest label with high confidence (measured: the audit prompt -> `launch` at
+    # 0.825). A numeric trust threshold cannot separate that from a genuine conviction, because Laya is
+    # genuinely convinced. The LLM, by contrast, is the only one told which domains this company's history
+    # actually covers (COVERED_DOMAINS, derived from the corpus).
+    #
+    # So: prefer the LLM's domain when it names a covered area, fall back to Laya otherwise. Laya's value
+    # in this app is its calibrated probability plus the reversibility and value-given-away signals, not
+    # its domain label, so its label is reported but not authoritative.
+    laya_dom_conf = ((laya_attrs or {}).get("laya") or {}).get("domain_confidence", 0) or 0
+    llm_domain = parsed.get("domain")
+    laya_domain = (laya_attrs or {}).get("domain")
+    if llm_domain in COVERED_DOMAINS:
+        chosen = llm_domain
+    elif laya_domain in COVERED_DOMAINS:
+        chosen = laya_domain
+        parsed["domain_arbitration"] = "laya (LLM domain not covered by the corpus)"
+    else:
+        chosen = llm_domain or laya_domain or "operations"
+        parsed["domain_arbitration"] = "neither model named a covered area"
+    if chosen != llm_domain:
+        parsed["domain_arbitration"] = parsed.get("domain_arbitration") or "laya"
+    parsed["domain"] = chosen
+    if laya_attrs:
+        parsed.setdefault("laya", {})
+        if isinstance(parsed.get("laya"), dict):
+            parsed["laya"]["laya_domain_label"] = laya_domain
+            parsed["laya"]["laya_domain_confidence"] = laya_dom_conf
     if laya_attrs:
         parsed["laya"] = laya_attrs.get("laya")
     return parsed, {"llm_calls": calls, "laya": laya_meta}

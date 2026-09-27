@@ -256,7 +256,7 @@ async def biz_bank() -> dict[str, Any]:
 
 @app.post("/api/biz/seed")
 async def biz_seed(force: bool = Query(False, description="delete existing documents first")) -> dict[str, Any]:
-    """Seed the business corpus. 36 retains, each costing extraction tokens."""
+    """Seed the business corpus. 72 retains, each costing extraction tokens."""
     bid = settings().biz_bank_id
     out: dict[str, Any] = {"bank_id": bid}
     if force:

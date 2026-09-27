@@ -87,3 +87,58 @@ var r=document.documentElement;
 if(d)r.classList.add('dark');
 r.style.colorScheme=d?'dark':'light';
 }catch(e){}})();`;
+
+
+/**
+ * Segmented three-way theme control for the sidebar. Shares the same storage key and apply() logic as the
+ * cycle button, so the two can never disagree.
+ */
+export function ThemeChoice() {
+  const [mode, setMode] = useState<Mode>("system");
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(KEY) as Mode | null;
+    setMode(stored && ORDER.includes(stored) ? stored : "system");
+    setMounted(true);
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const onChange = () => {
+      const cur = (localStorage.getItem(KEY) as Mode | null) ?? "system";
+      if (cur === "system") apply("system");
+    };
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  function pick(next: Mode) {
+    setMode(next);
+    apply(next);
+    localStorage.setItem(KEY, next);
+  }
+
+  const ICON: Record<Mode, typeof Sun> = { system: Monitor, light: Sun, dark: Moon };
+
+  return (
+    <div className="mt-2 inline-flex w-full rounded-md border border-[var(--rule-strong)] p-[2px]" role="radiogroup" aria-label="Theme">
+      {ORDER.map((m) => {
+        const Icon = ICON[m];
+        const active = mounted && mode === m;
+        return (
+          <button
+            key={m}
+            role="radio"
+            aria-checked={active}
+            onClick={() => pick(m)}
+            className={
+              "flex flex-1 items-center justify-center gap-1.5 rounded-[5px] px-2 py-1.5 text-[12px] transition-colors " +
+              (active ? "bg-[var(--paper-sunk)] text-ink" : "text-ink-muted hover:text-ink")
+            }
+          >
+            <Icon className="size-[13px]" strokeWidth={1.8} />
+            <span className="capitalize">{m}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}

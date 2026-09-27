@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import type { Precedent } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -13,6 +13,8 @@ import { cn } from "@/lib/utils";
  */
 export function SourcePill({ p, cited }: { p: Precedent; cited: boolean }) {
   const [open, setOpen] = useState(false);
+  const [flip, setFlip] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
   const bad = p.outcome === "bad" || p.outcome === "mixed" || p.outcome === "incident" || p.outcome === "degraded";
 
   const tone = p.is_mirror
@@ -21,15 +23,35 @@ export function SourcePill({ p, cited }: { p: Precedent; cited: boolean }) {
       ? "border-[var(--risk-high)] text-risk-high"
       : "border-[var(--rule-strong)] text-ink-muted";
 
+  /**
+   * Anchor the popover to whichever side has room.
+   *
+   * A left-anchored popover on a pill in the right third of the viewport overflows the page. Rather than
+   * guess, measure on open: if the pill's midpoint is past the middle of the viewport, anchor right.
+   */
+  const measure = () => {
+    const el = ref.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setFlip(r.left + r.width / 2 > window.innerWidth / 2);
+  };
+
   return (
-    <span className="group relative inline-block whitespace-nowrap">
+    // `whitespace-nowrap` binds to the button below, NOT this wrapper: on the wrapper it was inherited by
+    // the popover and stopped its text from wrapping, which is what made the preview overflow.
+    <span ref={ref} className="group relative inline-block">
       <button
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          measure();
+          setOpen((v) => !v);
+        }}
+        onMouseEnter={measure}
+        onFocus={measure}
         aria-expanded={open}
         title="Click to read the full record"
         className={cn(
-          "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-[3px]",
-          "font-mono text-[11.5px] transition-colors hover:bg-[var(--paper-sunk)]",
+          "inline-flex max-w-[min(22rem,70vw)] items-center gap-1.5 whitespace-nowrap rounded-full border",
+          "px-2.5 py-[3px] font-mono text-[11.5px] transition-colors hover:bg-[var(--paper-sunk)]",
           tone,
         )}
       >
@@ -39,16 +61,16 @@ export function SourcePill({ p, cited }: { p: Precedent; cited: boolean }) {
         <ChevronDown className={cn("size-[11px] transition-transform", open && "rotate-180")} />
       </button>
 
-      {/* hover preview: absolutely positioned so it never shifts layout. pointer-events-none so it
-          cannot steal the click from the button underneath. */}
       {!open && (
         <span
           role="tooltip"
           className={cn(
-            "pointer-events-none absolute left-0 top-full z-30 mt-1.5 w-[min(30rem,80vw)]",
+            "pointer-events-none absolute top-[calc(100%+6px)] z-40",
+            "w-max max-w-[min(30rem,calc(100vw-2.5rem))] whitespace-normal",
             "rounded-md border border-[var(--rule-strong)] bg-[var(--paper-raised)] p-3",
             "text-[12.5px] leading-relaxed text-ink-soft",
             "opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100",
+            flip ? "right-0" : "left-0",
           )}
           style={{ boxShadow: "0 8px 28px rgba(0,0,0,0.14)" }}
         >
@@ -61,7 +83,15 @@ export function SourcePill({ p, cited }: { p: Precedent; cited: boolean }) {
       )}
 
       {open && (
-        <div className="fade-up mt-2 max-w-[62ch] rounded-md border border-[var(--rule)] bg-[var(--paper-raised)] p-3.5">
+        <div
+          className={cn(
+            "fade-up absolute top-[calc(100%+6px)] z-40",
+            "w-[min(58ch,calc(100vw-2.5rem))] max-h-[min(70vh,32rem)] overflow-y-auto",
+            "rounded-md border border-[var(--rule-strong)] bg-[var(--paper-raised)] p-3.5",
+            flip ? "right-0" : "left-0",
+          )}
+          style={{ boxShadow: "0 10px 32px rgba(0,0,0,0.16)" }}
+        >
           <div className="mb-1.5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <span className="font-mono text-[12.5px] font-medium text-ink">{p.launch_id}</span>
             <span className="text-[12px] text-ink-faint">{p.date}</span>
@@ -96,10 +126,6 @@ export function SourcePill({ p, cited }: { p: Precedent; cited: boolean }) {
   );
 }
 
-/**
- * The collapsed evidence row: one pill per cited precedent, in citation order.
- * Default state is collapsed, because the answer is the point and the sources are the apparatus.
- */
 export function SourceRow({
   precedents,
   citedIds,

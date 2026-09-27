@@ -29,6 +29,10 @@ class Decision:
     result: str
     lesson: str
     is_mirror: bool = False
+    # richer scenario detail; empty for decisions that only need the base shape
+    owner: str = ""
+    scale: str = ""
+    context: str = ""
 
     @property
     def date(self) -> datetime:
@@ -39,8 +43,20 @@ class Decision:
         return self.outcome in ("mixed", "bad")
 
     def text(self) -> str:
+        # The rich fields are here because recall quality depends on the detail: a one-line decision
+        # retrieves on keyword overlap, whereas an owner, an amount, and the market context of the moment
+        # retrieve on situation and give a judge something checkable.
         parts = [
             f"Business decision {self.decision_id} | {self.domain} | {self.decision_type}",
+            f"Decided on: {self.date.date().isoformat()}",
+        ]
+        if self.owner:
+            parts.append(f"Owner: {self.owner}")
+        if self.scale:
+            parts.append(f"Amount at stake: {self.scale}")
+        if self.context:
+            parts.append(f"Context at the time: {self.context}")
+        parts += [
             f"Decision: {self.decision}",
             f"Rationale at the time: {self.rationale}",
             f"Result: {self.result}",
@@ -65,6 +81,8 @@ class Decision:
             m["pattern_id"] = self.pattern_id
         if self.is_mirror:
             m["is_mirror"] = "true"
+        if self.owner:
+            m["owner"] = self.owner
         return m
 
 
@@ -218,32 +236,77 @@ PLAIN = {
 }
 
 
+def _rich(domain: str, dtype: str) -> dict[str, str]:
+    """Owner / scale / context for a domain+type, empty when the base corpus is enough."""
+    from .bizcorpus_extra import RICH
+    return RICH.get((domain, dtype), {}) if ENRICH else {}
+
+
+def _merge_extras(extras, key):
+    """Overlay the richer half's tables on top of the base ones, so both halves resolve."""
+    merged = dict(globals().get(key) or {})
+    merged.update(extras)
+    return merged
+
+
 def corpus() -> list[Decision]:
     out: list[Decision] = []
     seen_breaks: dict[str, int] = {}
-    for idx, pattern, domain, dtype, kind in PLAN:
+    for idx, pattern, domain, dtype, kind in FULL_PLAN:
         d = START + timedelta(days=STEP_DAYS * idx)
         did = f"D-{d.year}-{idx:04d}"
         if kind == "plain" or pattern is None:
-            dec, rat, res, lesson = PLAIN[domain]
-            out.append(Decision(idx, did, domain, dtype, None, "good", dec, rat, res, lesson))
+            dec, rat, res, lesson = FULL_PLAIN[domain]
+            r = _rich(domain, dtype)
+            out.append(Decision(idx, did, domain, dtype, None, "good", dec, rat, res, lesson,
+                                owner=r.get("owner", ""), scale=r.get("scale", ""),
+                                context=r.get("context", "")))
             continue
         key = "mir" if kind == "mir" else "brk"
-        dec, rat = CHANGES[pattern][key]
+        dec, rat = FULL_CHANGES[pattern][key]
+        r = _rich(domain, dtype)
         if kind == "mir":
             out.append(Decision(idx, did, domain, dtype, pattern, "good", dec, rat,
                                 "Went as intended. The near-identical earlier decision in this domain did not.",
-                                LESSONS[pattern], is_mirror=True))
+                                FULL_LESSONS[pattern], is_mirror=True,
+                                owner=r.get("owner", ""), scale=r.get("scale", ""),
+                                context=r.get("context", "")))
         else:
-            seq = _BREAK_PLAN[pattern]
+            seq = FULL_BREAK_PLAN[pattern]
             n = seen_breaks.get(pattern, 0)
             outcome = seq[n] if n < len(seq) else seq[-1]
             seen_breaks[pattern] = n + 1
-            res = RESULTS[pattern] if outcome != "good" else (
+            res = FULL_RESULTS[pattern] if outcome != "good" else (
                 "No material harm this time, though the same decision shape has gone badly before.")
             out.append(Decision(idx, did, domain, dtype, pattern, outcome, dec, rat, res,
-                                LESSONS[pattern] if outcome != "good" else ""))
+                                FULL_LESSONS[pattern] if outcome != "good" else "",
+                                owner=r.get("owner", ""), scale=r.get("scale", ""),
+                                context=r.get("context", "")))
     return out
+
+
+# ---------------------------------------------------------------- merged base + extra history
+
+# ENRICH toggles the richer half (bizcorpus_extra): owners, amounts at stake, market context, and four
+# additional decision areas. Off, this module behaves exactly as the original 36-decision corpus.
+ENRICH = True
+
+if ENRICH:
+    from . import bizcorpus_extra as _extra
+
+    FULL_PLAN = PLAN + _extra.EXTRA_PLAN
+    FULL_BREAK_PLAN = {**_BREAK_PLAN, **_extra.EXTRA_BREAK_PLAN}
+    FULL_RESULTS = {**RESULTS, **_extra.EXTRA_RESULTS}
+    FULL_LESSONS = {**LESSONS, **_extra.EXTRA_LESSONS}
+    FULL_CHANGES = {**CHANGES, **_extra.EXTRA_CHANGES}
+    FULL_PLAIN = {**PLAIN, **_extra.EXTRA_PLAIN}
+else:
+    FULL_PLAN = PLAN
+    FULL_BREAK_PLAN = _BREAK_PLAN
+    FULL_RESULTS = RESULTS
+    FULL_LESSONS = LESSONS
+    FULL_CHANGES = CHANGES
+    FULL_PLAIN = PLAIN
 
 
 # ---------------------------------------------------------------- demo prompts (free text)
@@ -289,6 +352,8 @@ PROMPTS: list[Prompt] = [
         expect="no precedent, no confident answer, neighbouring decisions shown and declined",
     ),
 ]
+
+PROMPTS = PROMPTS + [Prompt(**p) for p in _extra.EXTRA_PROMPTS] if ENRICH else PROMPTS
 
 PROMPT_BY_KEY = {p.key: p for p in PROMPTS}
 
