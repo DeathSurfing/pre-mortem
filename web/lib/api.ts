@@ -47,10 +47,11 @@ export type Opinion = {
 export type StreamEvent =
   | { type: "status"; message: string; step: string }
   | { type: "ledger"; promoted: string[] }
-  | { type: "classify"; domain: string; decision_type: string; intent: string; rationale: string; laya: LayaSignals | null }
+  | { type: "classify"; domain: string; decision_type: string; mode?: "decision" | "chat"; intent: string; rationale: string; laya: LayaSignals | null }
   | { type: "verdict"; risk: "high" | "medium" | "low" | "unknown"; confidence: number; no_precedent: boolean; rules: string; relaxed: boolean }
   | { type: "precedents"; precedents: Precedent[]; declined: Declined[] }
   | { type: "delta"; text: string }
+  | { type: "reasoning"; text: string }
   | ({ type: "guess" } & GuessBlock)
   | { type: "done"; opinion?: Opinion | null; engine: Record<string, unknown>; facts_used: string[]; citations_in_prose: string[]; uncited_facts?: string[]; attribution_unverified?: string[] }
   | { type: "error"; message: string };

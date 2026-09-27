@@ -33,6 +33,12 @@ DOMAINS = ["pricing", "hiring", "vendor", "marketing", "launch", "buildvsbuy", "
 # the two can never drift apart. Used to arbitrate the domain between the two classifiers.
 COVERED_DOMAINS = frozenset(d.domain for d in bizcorpus.corpus())
 
+# Mode gate thresholds on Laya's domain_probability. Chosen from the measured gap above: non-decisions
+# cluster at 0.27-0.45 and decisions at 0.94-0.99, so anything over 0.60 is a decision and anything under
+# 0.35 is conversation. The band between is disambiguated by the model.
+LAYA_MODE_DECISION = 0.60
+LAYA_MODE_CHAT = 0.35
+
 CLASSIFY_SCHEMA = {
     "type": "object",
     "required": ["domain", "decision_type", "intent"],
@@ -55,7 +61,65 @@ CLASSIFY_SYSTEM = (
     "Give `decision_type` as a short kebab-case label describing the mechanics of the decision "
     "(discount, senior-hire, vendor-switch, budget-shift, build, buy, feature-ga, price-increase, "
     "new-office, audit-finding, incident-response, reseller-agreement, datacenter-region, and so on).\n"
-    "Do not give an opinion, a risk assessment, or advice. Classify only. Return JSON."
+    "Also decide `mode`:\n"
+    "  \"decision\" if the message asks for a judgement or review of a specific business decision the sender "
+    "is considering or has made (should we / is this a good idea / what do you think of this plan / review "
+    "this proposal).\n"
+    "  \"chat\" for everything else: greetings, thanks, questions about this tool or how it works, questions "
+    "about what happened in the past, small talk, or a follow-up asking for more detail on an answer already "
+    "given. When unsure prefer \"chat\": a chat reply is cheap, while treating a greeting as a decision "
+    "produces a verdict the sender never asked for.\n"
+    "Do not give an opinion, a risk assessment, or advice. Classify only. Return JSON with the keys "
+    "`mode`, `domain`, `decision_type`, `intent`, and `rationale`."
+)
+
+# Mode gate thresholds on Laya's domain_probability. Chosen from the measured gap above: non-decisions
+# cluster at 0.27-0.45 and decisions at 0.94-0.99, so anything over 0.60 is a decision and anything under
+# 0.35 is conversation. The band between is disambiguated by the model.
+LAYA_MODE_DECISION = 0.60
+LAYA_MODE_CHAT = 0.35
+
+# Documented shape of the classify response. NOT passed as a JSON schema: the gateway only supports
+# `response_format: json_object`, so the fields are described in CLASSIFY_SYSTEM instead.
+CLASSIFY_SCHEMA = {
+    "type": "object",
+    "required": ["mode"],
+    "properties": {
+        "mode": {
+            "type": "string",
+            "enum": ["decision", "chat"],
+            "description": (
+                "`decision` if the message asks for a judgement or review of a specific business decision "
+                "the sender is considering or has made (should we / is this a good idea / what do you think "
+                "of this plan / review this). "
+                "`chat` for everything else: greetings, questions about the product or how it works, "
+                "questions about past decisions, small talk, or a follow-up that just asks for more detail "
+                "on an answer already given. When in doubt prefer `chat`: a chat reply is cheap, whereas "
+                "treating a greeting as a decision produces a verdict the sender never asked for."
+            ),
+        },
+        "domain": {"type": "string"},
+        "decision_type": {"type": "string", "description": "kebab-case; empty when mode is chat"},
+        "intent": {"type": "string", "description": "one short sentence on what the sender wants"},
+    },
+}
+
+# A plain conversational reply. No memory is consulted and no id may be cited, because a normal chat answer
+# must never look like a reviewed decision.
+CHAT_SYSTEM = (
+    "You are the assistant inside pre-mortem, a tool that reviews business decisions against a company's own "
+    "recorded history.\n"
+    "The message you are replying to is NOT a decision to review. Answer it as a normal, helpful assistant "
+    "would: plain prose, direct, no headings, no bullet clusters, no verdict, no risk rating.\n"
+    "Rules:\n"
+    "1. Do NOT give a risk level, a verdict, or a recommendation about a decision. That is the decision path's "
+    "job, and a chat reply must never impersonate it.\n"
+    "2. Do NOT cite a decision id. You have not been shown the company's records, so any id would be "
+    "fabricated. If the sender asks about past decisions, say you can look them up and ask them to put the "
+    "decision to you as a question to review.\n"
+    "3. Keep it short: 1-3 sentences unless the sender clearly wants more.\n"
+    "4. If the message is a greeting or a question about the tool, answer it and, where it helps, note that "
+    "they can describe a decision and you will check it against what the company has done before."
 )
 
 OPINION_SCHEMA = {
@@ -140,6 +204,60 @@ BASELINE_SYSTEM = (
     "Give a short opinion in three bullets."
 )
 
+# Streaming variant of the guess prompt: delimited labels rather than JSON, because a JSON object streamed
+# token by token renders as literal escape sequences in the UI. Parsed by _parse_guess_block below.
+NO_PRECEDENT_GUESS_STREAM_SYSTEM = (
+    "You are a business decision reviewer inside a company. The company has NO recorded precedent for this "
+    "decision, and that has already been stated to the user.\n"
+    "Your job is to add an explicitly-labelled guess, not a verdict. Write in EXACTLY this format with these "
+    "four labels and nothing else. No JSON, no braces, no code fences, no headings.\n"
+    "VERDICT: one sentence stating plainly that there is not enough company history to judge this.\n"
+    "GUESS: 2-4 sentences of general best practice for this kind of decision, written as a guess. This is what "
+    "a competent advisor would say with no knowledge of this company's history.\n"
+    "WATCH: up to 3 risks or questions that would change the decision, one per line prefixed with '- '.\n"
+    "CONFIDENCE: exactly one of LOW, MEDIUM, HIGH, meaning how much weight the guess deserves. It must be LOW "
+    "unless this is genuinely textbook territory.\n"
+    "Rules, in order of importance:\n"
+    "1. This is a guess from general practice, NOT company memory. Never cite a decision id. You have not been "
+    "shown the company's records, so any id you write would be fabricated. Writing one is a failure.\n"
+    "2. Never invent a figure, a past event, or a company-specific fact.\n"
+    "3. Do not pretend to certainty. The GUESS label and the CONFIDENCE level are how the user knows this is "
+    "not grounded in their history.\n"
+    "4. Be useful. A flat 'I cannot help' is a non-answer; give the honest general read.\n"
+    "Start with VERDICT: and follow the format exactly."
+)
+
+
+def _parse_guess_block(text: str) -> dict[str, Any]:
+    """Parse the delimited guess format back into the shape _guess_block produces.
+
+    Delimited rather than JSON because the guess is streamed to the user token by token, and a JSON object
+    rendered incrementally shows literal escapes. Tolerant by design: a missing label yields an empty field
+    rather than an exception, since this parses a partially-written model response.
+    """
+    keys = ("VERDICT", "GUESS", "WATCH", "CONFIDENCE")
+    fields: dict[str, list[str]] = {k: [] for k in keys}
+    current: str | None = None
+    for line in text.splitlines():
+        m = re.match(r"^\s*(%s)\s*:\s*(.*)$" % "|".join(keys), line, re.I)
+        if m:
+            current = m.group(1).upper()
+            rest = m.group(2).strip()
+            if rest:
+                fields[current].append(rest)
+        elif current:
+            fields[current].append(line.rstrip())
+
+    watch = [w.strip("- ").strip() for w in fields["WATCH"] if w.strip()]
+    conf = " ".join(fields["CONFIDENCE"]).strip().upper().split()
+    return {
+        "verdict": "\n".join(fields["VERDICT"]).strip(),
+        "guess": "\n".join(fields["GUESS"]).strip(),
+        "watch": watch,
+        "confidence": conf[0] if conf else "LOW",
+    }
+
+
 # Used ONLY when the company has no precedent. The refusal is stated first and stays true; the guess is a
 # separate, fenced block that is forbidden from citing memory, so a general-model opinion can never be
 # mistaken for the company's own recorded experience. That separation is the whole point of the product.
@@ -192,7 +310,9 @@ async def classify(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """
     laya_attrs, laya_meta = await laya_client.classify_async(text)
 
-    parsed, meta = await chat_json(CLASSIFY_SYSTEM, f"Decision under consideration:\n{text}", max_tokens=3000)
+    # Same call, no extra cost: `mode` decides whether this is a decision to review or ordinary
+    # conversation. Routing on the classification we were already paying for is why this is free.
+    parsed, meta = await chat_json(CLASSIFY_SYSTEM, f"Message from the user:\n{text}", max_tokens=3000)
     calls = meta.get("llm_calls", 0)
 
     if not parsed:
@@ -201,6 +321,34 @@ async def classify(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
                               "intent": text[:200], "rationale": "", "keywords": []}
         return base, {"llm_calls": calls, "laya": laya_meta, "degraded": True}
 
+    # ---- mode gate: is this a decision to review, or ordinary conversation?
+    #
+    # Laya decides this, because its domain probability separates the two cleanly and it costs nothing.
+    # Measured on this corpus (domain_probability):
+    #     "hey, how are you doing today?"                0.29
+    #     "what did we decide about the Acme renewal?"   0.27
+    #     "what does this tool actually do?"             0.45
+    #     "should I give Acme a 30% discount...?"        0.99
+    #     "we are considering opening an office in..."   0.94
+    # So: high means a real business-decision area, low means nothing decidable was said. The band in the
+    # middle is genuinely ambiguous and falls back to the model's own `mode` field, which is the only part
+    # of the classification that costs anything.
+    mode = "decision"
+    if laya_attrs:
+        prob = ((laya_attrs.get("laya") or {}).get("domain_probability"))
+        prob = float(prob) if isinstance(prob, (int, float)) else None
+        if prob is not None:
+            if prob >= LAYA_MODE_DECISION:
+                mode = "decision"
+            elif prob <= LAYA_MODE_CHAT:
+                mode = "chat"
+            else:
+                mode = "chat" if str(parsed.get("mode", "")).strip().lower() == "chat" else "decision"
+                parsed["mode_arbitration"] = f"laya ambiguous ({prob:.2f}), model decided"
+    else:
+        # no Laya available: the model's own field is all we have
+        mode = "chat" if str(parsed.get("mode", "")).strip().lower() == "chat" else "decision"
+    parsed["mode"] = mode
     if parsed.get("domain") not in DOMAINS:
         parsed["domain"] = "operations"
     # Trust Laya's domain over the LLM ONLY when Laya is actually sure. Measured on the audit prompt, Laya
@@ -248,6 +396,7 @@ async def redflag(text: str, *, memory: bool = True, promoted: set[str] | None =
     s = settings()
     now = datetime.now(timezone.utc)
     out: dict[str, Any] = {
+        "mode": None,
         "memory": memory,
         "prompt": text,
         "precedents": [],
@@ -265,7 +414,18 @@ async def redflag(text: str, *, memory: bool = True, promoted: set[str] | None =
         out["engine"]["llm_calls"] += cmeta.get("llm_calls", 0)
         out["engine"]["classified_by"] = cmeta.get("model")
     out["classified"] = attrs
+    out["mode"] = attrs.get("mode", "decision")
     domain, dtype = attrs.get("domain"), attrs.get("decision_type")
+
+    # Ordinary conversation: a plain reply, with no recall and no verdict, exactly as the streaming path
+    # does. Both endpoints must agree, or the same message gets reviewed on one and answered on the other.
+    if out["mode"] == "chat":
+        reply, cmeta2 = await chat_text(CHAT_SYSTEM, text, max_tokens=800)
+        out["engine"]["llm_calls"] += cmeta2.get("llm_calls", 0)
+        out["reply"] = reply
+        out["precedents"] = []
+        out["declined"] = []
+        return out
 
     recalled: list[dict[str, Any]] = []
     if memory:
@@ -414,9 +574,23 @@ async def redflag_stream(text: str, *, promoted: set[str] | None = None):
         yield ev("status", message="classifying the decision", step="classify")
         attrs, cmeta = await classify(text)
         domain, dtype = attrs.get("domain"), attrs.get("decision_type")
-        yield ev("classify", domain=domain, decision_type=dtype,
+        yield ev("classify", domain=domain, decision_type=dtype, mode=attrs.get("mode"),
                  intent=attrs.get("intent"), rationale=attrs.get("rationale"),
                  laya=attrs.get("laya"), llm_calls=cmeta.get("llm_calls", 0))
+
+        # Ordinary conversation: answer it and stop. No recall, no verdict, no citations, and the frontend
+        # renders it as a plain chat bubble rather than a reviewed decision.
+        if attrs.get("mode") == "chat":
+            yield ev("status", message="replying", step="chat")
+            async for kind, piece in chat_stream(CHAT_SYSTEM, text, reasoning=True):
+                if kind == "reasoning":
+                    yield ev("reasoning", text=piece)
+                else:
+                    yield ev("delta", text=piece)
+            yield ev("done", engine={"ranker": "skipped (not a decision)", "llm_calls": cmeta.get("llm_calls", 0),
+                                     "mode": "chat", "model": s.llm_model},
+                     facts_used=[], citations_in_prose=[], attribution_unverified=[])
+            return
 
         yield ev("status", message="recalling past decisions", step="recall")
         q = " ".join([attrs.get("intent") or "", attrs.get("rationale") or "",
@@ -464,17 +638,27 @@ async def redflag_stream(text: str, *, promoted: set[str] | None = None):
             # The refusal above is the answer. The guess below is a separate, labelled block so it can
             # never be mistaken for company memory: it is forbidden from citing an id and is scanned for
             # one before it reaches the client.
-            yield ev("status", message="no precedent, drafting a labelled guess", step="guess")
-            guessed, gmeta = await chat_json(
-                NO_PRECEDENT_GUESS_SYSTEM,
+            yield ev("status", message="no precedent, thinking it through", step="guess")
+            # Streamed, not a blocking call: on a no-precedent prompt the guess IS the main content, so it
+            # should type itself out with a reasoning trace like every other answer rather than appearing
+            # all at once after a pause.
+            guessed_buf: list[str] = []
+            async for kind, piece in chat_stream(
+                NO_PRECEDENT_GUESS_STREAM_SYSTEM,
                 f"DECISION THE USER IS CONSIDERING\n{text}\n\n"
                 f"CLASSIFIED AS: domain={domain}, type={dtype}\n"
                 "There is no company precedent. Give the refusal-consistent verdict plus a labelled guess.",
-                max_tokens=1500,
-            )
-            yield ev("guess", **(_guess_block(guessed, domain, dtype)))
+                max_tokens=1800,
+                reasoning=True,
+            ):
+                if kind == "reasoning":
+                    yield ev("reasoning", text=piece)
+                else:
+                    guessed_buf.append(piece)
+            parsed_guess = _parse_guess_block("".join(guessed_buf))
+            yield ev("guess", **(_guess_block(parsed_guess, domain, dtype)))
             yield ev("done", engine={"ranker": "deterministic",
-                                     "llm_calls": cmeta.get("llm_calls", 0) + gmeta.get("llm_calls", 0),
+                                     "llm_calls": cmeta.get("llm_calls", 0) + 1,
                                      "no_precedent": True, "model": s.llm_model},
                      facts_used=[], citations_in_prose=[], attribution_unverified=[])
             return
@@ -489,7 +673,10 @@ async def redflag_stream(text: str, *, promoted: set[str] | None = None):
             "Cite decision ids inline in every sentence."
         )
         buf = ""
-        async for piece in chat_stream(STREAM_OPINION_SYSTEM, user, max_tokens=3000):
+        async for kind, piece in chat_stream(STREAM_OPINION_SYSTEM, user, max_tokens=3000, reasoning=True):
+            if kind == "reasoning":
+                yield ev("reasoning", text=piece)
+                continue
             buf += piece
             yield ev("delta", text=piece)
 

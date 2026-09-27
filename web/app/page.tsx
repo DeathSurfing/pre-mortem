@@ -14,6 +14,7 @@ import {
 import { DecisionId, Label } from "@/components/editorial";
 import { AnnotatedProse, SourceRow } from "@/components/sources";
 import { GuessPanel } from "@/components/guess";
+import { Thinking } from "@/components/reasoning";
 import { GuessBlock, Health } from "@/lib/api";
 import { Sidebar } from "@/components/sidebar";
 import { DEFAULT_SETTINGS, useSettings } from "@/lib/settings";
@@ -120,6 +121,10 @@ type Turn = {
   guess?: GuessBlock | null;
   /** A follow-up in an existing thread: answered in compact prose, without repeating the whole dossier. */
   followUp?: boolean;
+  /** `chat` = ordinary conversation, rendered as a plain message with no verdict or citations. */
+  mode?: "decision" | "chat";
+  /** The model's streamed reasoning trace, shown collapsed. */
+  thinking?: string;
   error?: string;
   busy: boolean;
 };
@@ -174,7 +179,15 @@ export default function Page() {
       await streamRedflag(question, (e) => {
         if (e.type === "status") patch((t) => ({ ...t, status: e.message }));
         else if (e.type === "classify")
-          patch((t) => ({ ...t, domain: e.domain, dtype: e.decision_type, laya: e.laya, status: "recalling past decisions" }));
+          patch((t) => ({
+            ...t,
+            domain: e.domain,
+            dtype: e.decision_type,
+            mode: e.mode ?? "decision",
+            laya: e.laya,
+            status: e.mode === "chat" ? "replying" : "recalling past decisions",
+          }));
+        else if (e.type === "reasoning") patch((t) => ({ ...t, thinking: (t.thinking ?? "") + e.text }));
         else if (e.type === "verdict")
           patch((t) => ({ ...t, risk: e.risk, confidence: e.confidence, noPrecedent: e.no_precedent, rules: e.rules, status: "writing the review" }));
         else if (e.type === "precedents") patch((t) => ({ ...t, precedents: e.precedents, declined: e.declined }));
@@ -321,7 +334,7 @@ export default function Page() {
               {t.question}
             </h2>
 
-            {t.busy && (
+            {t.busy && t.mode !== "chat" && (
               <div className="mt-4 flex items-center gap-2.5 text-[13px] text-ink-muted">
                 <span className="inline-block size-[7px] animate-pulse rounded-full bg-accent" />
                 {t.status}…
@@ -334,7 +347,7 @@ export default function Page() {
               </div>
             )}
 
-            {t.risk && (
+            {t.risk && t.mode !== "chat" && (
               <div className="mt-5 flex flex-wrap items-baseline gap-x-5 gap-y-2">
                 <RiskMark risk={t.risk} />
                 {!t.noPrecedent && (
@@ -346,9 +359,11 @@ export default function Page() {
               </div>
             )}
 
-            {showEvidence && t.domain && !t.noPrecedent && (
+            {showEvidence && t.domain && !t.noPrecedent && t.mode !== "chat" && (
               <LayaNote laya={t.laya ?? null} domain={t.domain} dtype={t.dtype ?? ""} />
             )}
+
+            {t.mode !== "chat" && <div className="mt-4"><Thinking text={t.thinking ?? ""} busy={t.busy} /></div>}
 
             {/* the review.
                 Three shapes:
@@ -357,7 +372,17 @@ export default function Page() {
                   - follow-up: compact prose only. Same memory and same citations, no repeated dossier
                   - opening question: the full dossier, prose left and the apparatus at the margin
             */}
-            {t.noPrecedent ? (
+            {t.mode === "chat" ? (
+              // Ordinary conversation: plain prose, no risk banner, no dossier, no citations. The whole
+              // point is that it reads as a normal assistant reply, not as a reviewed decision.
+              <div className="mt-5 max-w-[68ch]">
+                <Thinking text={t.thinking ?? ""} busy={t.busy} />
+                <p className="prose-editorial mt-2 text-[15px] leading-relaxed text-ink-soft">
+                  {t.streamed ? t.streamed : t.busy ? null : "(no reply)"}
+                  {t.busy && <span className="caret" />}
+                </p>
+              </div>
+            ) : t.noPrecedent ? (
               <>
                 <p className="measure prose-editorial mt-6 text-[15px] leading-relaxed text-ink-soft">
                   <AnnotatedProse text={t.streamed} precedents={t.precedents ?? []} />
@@ -448,11 +473,11 @@ export default function Page() {
 
             {/* sources: always visible as pills, so every claim stays attributable at a glance.
                 The full records are behind the pill click, or revealed wholesale with "show sources". */}
-            {t.precedents && t.precedents.length > 0 && (
+            {t.mode !== "chat" && t.precedents && t.precedents.length > 0 && (
               <SourceRow precedents={t.precedents} citedIds={t.cited ?? []} />
             )}
 
-            {showEvidence && (
+            {showEvidence && t.mode !== "chat" && (
               <section className="mt-8">
                 {t.unverified && t.unverified.length > 0 && (
                   <p className="mb-3 text-[12.5px] text-risk-medium">

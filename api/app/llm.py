@@ -163,11 +163,17 @@ async def chat_stream(
     model: str | None = None,
     temperature: float = 0.3,
     max_tokens: int = 3000,
+    reasoning: bool = False,
 ):
-    """Async generator of answer-text deltas.
+    """Async generator of (kind, text) pairs, where kind is "content" or "reasoning".
 
-    Verified on OpenCode Go: the SSE stream emits `reasoning_content` deltas BEFORE `content`. Only
-    `content` is yielded, so the model's thinking is never shown to the user. The raw stream looks like:
+    Callers must unpack: `async for kind, piece in chat_stream(...)`. Tuple-shaped rather than two separate
+    generators so a single upstream stream feeds both lanes in order.
+
+    Verified on OpenCode Go: the SSE stream emits `reasoning_content` deltas BEFORE `content`.
+    With `reasoning=True` the caller also receives ("reasoning", text) pairs, which the UI renders as a
+    collapsed "thinking" trace. Those are not shown unless asked for, but they are a real reasoning trace
+    the model already produces, so discarding them is throwing away signal. The raw stream looks like:
 
         data: {"choices":[{"delta":{"role":"assistant","content":"","reasoning_content":"We"}}]}
         ...
@@ -176,7 +182,7 @@ async def chat_stream(
     """
     s = settings()
     if not s.llm_key:
-        yield "[no OPENCODE_GO_API_KEY configured]"
+        yield ("content", "[no OPENCODE_GO_API_KEY configured]")
         return
     body = {
         "model": model or s.llm_model,
@@ -196,7 +202,7 @@ async def chat_stream(
                                  headers=headers, json=body) as r:
                 if r.status_code >= 400:
                     detail = (await r.aread()).decode()[:200]
-                    yield f"[upstream error {r.status_code}: {detail}]"
+                    yield ("content", f"[upstream error {r.status_code}: {detail}]")
                     return
                 async for line in r.aiter_lines():
                     if not line or not line.startswith("data:"):
@@ -209,9 +215,16 @@ async def chat_stream(
                     except Exception:  # noqa: BLE001
                         continue
                     delta = ((chunk.get("choices") or [{}])[0].get("delta") or {})
-                    # content only: reasoning_content is the model thinking out loud
+                    if reasoning:
+                        # Same stream, separate lane: yield the model's thinking as its own event so the
+                        # UI can show it collapsed. Previously discarded, which threw away a genuine
+                        # reasoning trace the model was already producing for free.
+                        think = delta.get("reasoning_content")
+                        if think:
+                            yield ("reasoning", think)
+                    # content only for the answer lane: reasoning_content is the thinking, not the answer
                     piece = delta.get("content")
                     if piece:
-                        yield piece
+                        yield ("content", piece)
     except Exception as e:  # noqa: BLE001
-        yield f"[stream failed: {type(e).__name__}: {e}]"
+        yield ("content", f"[stream failed: {type(e).__name__}: {e}]")
