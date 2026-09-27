@@ -40,7 +40,26 @@ class AssessBody(BaseModel):
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    """Readiness: config sane + Hindsight reachable + bank readable."""
+    """Liveness: always answered from local state, never from the network.
+
+    This is what the container healthcheck hits, so it MUST NOT depend on a remote service. Hindsight runs on
+    a third-party API; when it is slow, a healthcheck that waits on it fails, Docker marks the container
+    unhealthy, Traefik drops its route, and the whole site 404s. That is exactly the intermittent outage this
+    endpoint caused. Deep checks live on /health/deep where a slow dependency cannot take down the deployment.
+    """
+    s = settings()
+    return {
+        "ok": True,
+        "problems": s.problems(),
+        "bank_id": s.bank_id,
+        "models": {"llm": s.llm_model, "fallback": s.llm_fallback_model, "min_proof": s.min_proof},
+        "laya": laya_client.status(),
+    }
+
+
+@app.get("/health/deep")
+async def health_deep() -> dict[str, Any]:
+    """Full readiness: config sane + Hindsight reachable + bank readable. Slow, so not the healthcheck."""
     s = settings()
     out: dict[str, Any] = {
         "ok": True,
