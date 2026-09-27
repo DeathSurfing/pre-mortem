@@ -12,6 +12,10 @@ MSGS = [
     ("chat", "thanks, that helps"),
     ("decision", "Should I give Acme a 30 percent discount to close the renewal this quarter?"),
     ("decision", "We are considering opening an office in Lisbon."),
+    # questions about the records: must recall and cite, not answer from general knowledge
+    ("query", "what caused the most loss in the year?"),
+    ("query", "which decision cost us the most money?"),
+    ("query", "what did we decide about the Acme renewal?"),
 ]
 
 
@@ -50,6 +54,9 @@ for expected, msg in MSGS:
     # the contract: chat must be a plain reply, decisions must be reviewed
     if expected == "chat":
         good = mode == "chat" and not has_verdict and not cites
+    elif expected == "query":
+        # a records question must retrieve the records it answers from, and must not be a verdict
+        good = mode == "query" and has_precedents and not has_verdict
     else:
         good = mode == "decision" and has_verdict
 
