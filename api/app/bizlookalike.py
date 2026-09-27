@@ -84,6 +84,12 @@ CLASSIFY_SYSTEM = (
     "talk, or a follow-up asking for more detail on an answer already given. When unsure prefer \"chat\": a "
     "chat reply is cheap, while treating a greeting as a decision produces a verdict the sender never asked "
     "for.\n"
+    "Tie-break between \"query\" and \"decision\": if the message BOTH states an action the sender intends to "
+    "take and asks about the past, choose \"decision\". A review also searches the records and cites them, so "
+    "it answers the history question too, whereas \"query\" would withhold the judgement the sender is "
+    "implicitly asking for. Example: \"a partner is asking for exclusivity and I want to sign it quickly — "
+    "what has burned us on deals like this before?\" is a \"decision\", because a course of action is being "
+    "proposed.\n"
     "Do not give an opinion, a risk assessment, or advice. Classify only. Return JSON with the keys "
     "`mode`, `domain`, `decision_type`, `intent`, and `rationale`."
 )

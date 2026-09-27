@@ -16,6 +16,11 @@ MSGS = [
     ("query", "what caused the most loss in the year?"),
     ("query", "which decision cost us the most money?"),
     ("query", "what did we decide about the Acme renewal?"),
+    # regression: this mixes a proposed action with a history question. It must be reviewed, not merely
+    # answered from the records, because a review also cites them and additionally gives the judgement.
+    ("decision", "A partner with reach into a segment we cannot cover is asking for exclusivity in exchange "
+                 "for carrying us. I want to sign it quickly because they are the only credible route into "
+                 "that market. What has burned us on deals like this before?"),
 ]
 
 
