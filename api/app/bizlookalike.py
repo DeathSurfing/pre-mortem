@@ -94,23 +94,6 @@ CLASSIFY_SYSTEM = (
     "`mode`, `domain`, `decision_type`, `intent`, and `rationale`."
 )
 
-# Mode gate thresholds on Laya's domain_probability.
-#
-# Measured on this corpus: greetings and thanks 0.21-0.45, context-only statements about a decision
-# 0.18-0.23, real decisions 0.93-0.99. So a high score is reliably a decision and a low score is reliably
-# not one.
-#
-# The floor is very low (0.15) on purpose. A statement of context without a proposed action ("Acme's
-# renewal is at risk and their champion wants a gesture") scores 0.18, while "thanks, that helps" scores
-# 0.21 — the signal cannot separate those two, so the model must arbitrate rather than Laya guessing. Only
-# messages Laya scores as emphatically empty skip the model entirely.
-#
-# The asymmetry still drives the design: a message that should have been reviewed and is answered
-# conversationally silently withholds the whole product, whereas a conversational message that gets
-# reviewed is merely noisy. So the band where Laya decides alone is kept tiny.
-LAYA_MODE_DECISION = 0.60
-LAYA_MODE_CHAT = 0.15
-
 # Documented shape of the classify response. NOT passed as a JSON schema: the gateway only supports
 # `response_format: json_object`, so the fields are described in CLASSIFY_SYSTEM instead.
 CLASSIFY_SCHEMA = {
