@@ -21,7 +21,8 @@ narrate it over the app sitting idle.
 
 ### Beat 1 — the problem, with memory off (0:20-0:50)
 
-**Visual:** app, `MEMORY=off`, preset A loaded (payments-service, config-only, pool 40 -> 20).
+**Visual:** the web UI on `:3000`, `MEMORY=off`, preset A loaded (payments-service, config-only,
+pool 40 -> 20).
 
 **Action:** click Assess.
 
@@ -90,7 +91,7 @@ memory-growth chart from `get_memories_timeseries`.
 | 6 | Preset A with ledger promoted (card order changed) | ledger seeded |
 | 7 | Preset B (P3) | — |
 | 8 | Preset C, no precedent + declined list | — |
-| 9 | Prompt preview panel (`preview_prompt`) | optional, strong for technical judges |
+| 9 | Prompt preview panel (`preview_prompt`) | strong for technical judges: the literal assembled prompt |
 | 10 | Memory growth chart | `get_memories_timeseries` |
 | 11 | Replay chart: precision + coverage by epoch | `replay.json` |
 
@@ -128,6 +129,17 @@ Second variant, for the ledger angle:
 ## Short cut (30-45s)
 
 Beats 0, 2, 3, 4 compressed. Same narration, cut to the flip detail and the refusal. Post with the article.
+
+## If a judge asks about the stack
+
+Answer plainly, it reads as competence rather than improvisation:
+
+> Hindsight runs self-hosted from the FOSS image because Cloud pins the extraction model, and we wanted the
+> whole system on one provider. Hindsight drives 9Router, our existing gateway, on a combo model with
+> automatic fallback, and embeds locally. The product UI is Next.js on top of a FastAPI service that owns
+> every memory call. Nothing here calls a third-party AI API directly.
+
+Then offer them the Control Plane on `:9999` if they want to poke the banks themselves.
 
 ## Live demo (judges)
 

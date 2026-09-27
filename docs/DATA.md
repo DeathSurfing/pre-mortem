@@ -116,7 +116,7 @@ Flags recorded during the replay, so the ledger has a history by the demo:
 
 | Launch idx | Flag raised | Ignored? | Cost |
 |---|---|---|---|
-| 4 (P1 payments) | config-only pool change on payments | yes | incident |
+| idx 4 (P1 payments) | config-only pool change on payments | yes | incident |
 | 9 (P4 ingest) | batch size raised without profiling | yes | incident |
 | 16 (P1 payments) | config-only pool change on payments | no | — (actioned, no incident) |
 | 13 (P3 search) | schema migration without pre-backfill | yes | no incident that time |

@@ -76,6 +76,10 @@ confidence number, no trend, no calibration, and no way to prove the replay is h
 | Refusing to assert an uncited cause | `directives` ("never assert a precedent without a cited launch ID") |
 | Refusing instead of guessing | `disposition` skepticism 4 / literalism 5 / empathy 2 |
 | Instant, identical canned demo answers | `mental_models` |
+| Forcing observations to exist before recording | `banks.recover_consolidation()` |
+| Showing the literal assembled prompt (mission + directives + disposition + recalled facts) | `banks.preview_prompt()` |
+| A real memory-growth chart, bucketed by event time not ingest time | `banks.get_memories_timeseries(time_field="occurred_start")` |
+| Pre-record health check on the bank's LLM | `banks.test_bank_llm()` |
 
 ## The two numbers that make the learning claim falsifiable
 
@@ -93,16 +97,17 @@ The agent retains the flags you dismissed, and what each dismissal cost. Then it
 warning. Four flags ignored, two of which cost an incident, means the next one of that class is the first
 thing on screen.
 
-## Build plan (4 hours)
+## Build plan (5 hours, two tiers)
 
 | Time | Work |
 |---|---|
-| 0:00-0:30 | Hindsight Cloud bank + API key, Groq key, `pip install hindsight-client streamlit`, smoke-test retain/recall/reflect |
-| 0:30-1:30 | `seed.py` — 40 launches, 6 services, ~14 months, interlocked so real patterns exist. Retain with metadata, let it settle |
-| 1:30-2:15 | `lookalike.py` — recall the pending change, rank by proof count + recency + trend, extract the flip detail via one `reflect(response_schema=...)` |
-| 2:15-2:45 | `ledger.py` — retain ignored flags and their outcomes; make the agent lead with the ignored class |
-| 2:45-3:30 | `app.py` — one Streamlit screen: diff left, ranked precedents right, risk number top, flip detail bottom, `MEMORY=on/off` toggle, `no_precedent` state |
-| 3:30-4:00 | Bank `mission` / `directives` / `disposition`, 2 `mental_models`, replay the window, freeze the precision/coverage numbers, README + architecture sketch, raw screen capture |
+| 0:00-0:50 | Hindsight up on 9Router, `api/scripts/smoke.py` green: health, `test_bank_llm`, retain → recall → `reflect(response_schema)`. **Gate: no app code until this passes** |
+| 0:50-1:50 | `api/`: 40 interlocked launches, retain with metadata, force consolidation, `ground_truth.json` |
+| 1:50-2:35 | `api/`: recall with `query_timestamp`, deterministic rank, flip-detail via 9Router JSON mode, `no_precedent` path |
+| 2:35-3:00 | `api/`: ignored-warning ledger, epoch replay cached, `/api/metrics` |
+| 3:00-4:20 | `web/`: the one screen — change panel, memory toggle, risk banner, precedent cards with citations, **flip detail as the hero**, declined list, ledger, metrics |
+| 4:20-4:40 | Bank `mission` / `directives` / `disposition`, 2 `mental_models`, three presets end to end, freeze the numbers, raw screen capture |
+| 4:40-5:00 | `/health`, compose wiring, `.env.example`, README |
 
 **Never cut:** the `MEMORY=on/off` toggle, proof counts as confidence, the `no_precedent` refusal, the
 flip-detail line, the ignored-warning ledger. Everything else is decoration.
@@ -134,14 +139,14 @@ pre-mortem/
   README.md              <- this file (5-year-old explainer lives here for the video)
   PLAN.md                <- master plan: criteria mapping, SWOT, metrics, risks
   docs/
-    ARCHITECTURE.md      <- modules, contracts, verified Hindsight API surface, prompts
+    ARCHITECTURE.md      <- topology, API contracts, ranking, failure handling
+    MODELS.md            <- 9Router + self-hosted Hindsight, verified behaviour, fallbacks
     DATA.md              <- the 40-launch corpus, 6 interlocked patterns, ground truth
-    DEMO.md              <- 60s/3min video script, shot list, article + social outline
+    DEMO.md              <- 3min video script, shot list, article + social outline
     CHECKLIST.md         <- day-1 build, pre-record, submission gates
-  seed.py                <- synthetic launch history -> Hindsight
-  lookalike.py           <- recall + rank + flip-detail extraction
-  ledger.py              <- ignored warnings and what they cost
-  app.py                 <- the one Streamlit screen
+  api/                   <- FastAPI: owns Hindsight, seeding, ranking, replay, metrics
+  web/                   <- Next.js: the one screen (this is what judges watch)
+  docker-compose.yml     <- hindsight + api + web
 ```
 
 Start with `docs/ARCHITECTURE.md` and `docs/DATA.md`; they fix every decision the build depends on.
@@ -149,14 +154,19 @@ Start with `docs/ARCHITECTURE.md` and `docs/DATA.md`; they fix every decision th
 ## Setup
 
 ```bash
-pip install hindsight-client streamlit
-cp .env.example .env                # then fill in the keys below
-export HINDSIGHT_API_KEY=...        # Hindsight Cloud (promo MEMHACK99 for $50 credits)
-export GROQ_API_KEY=...             # free tier: openai/gpt-oss-120b
-python seed.py                      # build the 40-launch corpus, force consolidation
-python tests/run_all.py             # sanity checks, no framework needed
-streamlit run app.py
+cp .env.example .env        # NINEROUTER_URL, NINEROUTER_API_KEY, models
+docker compose up --build   # hindsight :8888, api :8000, web :3000
+
+# first run only, on a clean volume
+curl -X POST localhost:8000/api/seed          # 40 launches + forced consolidation
+python api/scripts/smoke.py                   # health, bank LLM, retain->recall->reflect
 ```
+
+Local dev without containers: `uvicorn app.main:app --reload` in `api/`, `npm run dev` in `web/`, and a
+Hindsight instance on `:8888` (see `docs/MODELS.md` for the exact `docker run` with 9Router wired in).
+
+No Groq key, no OpenAI key. The LLM is 9Router (`gareebi`, fallback `ocg/deepseek-v4.1-flash`); Hindsight
+embeds locally (`BAAI/bge-small-en-v1.5`), so there is no external embedding provider either.
 
 ## Scope, stated plainly
 

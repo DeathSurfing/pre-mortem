@@ -2,32 +2,39 @@
 
 Two days. Day 1 build, day 2 video + content. Tick in order, nothing out of sequence.
 
-## Before anything (10 min)
+## Before anything (50 min) — this block is a gate
 
-- [ ] Hindsight Cloud account created, promo `MEMHACK99` applied in billing (adds $50 credits)
-- [ ] Bank created, `HINDSIGHT_API_KEY` in `.env` (gitignored)
-- [ ] Groq key in `.env`, model set to `openai/gpt-oss-120b`
-- [ ] `pip install hindsight-client streamlit` (venv, PEP 668 means no system install)
-- [ ] `banks.test_bank_llm(bank_id)` passes — fails fast if the bank's LLM is unreachable
+- [ ] `.env` from `.env.example`: `NINEROUTER_URL`, `NINEROUTER_API_KEY`, `LLM_MODEL=gareebi`,
+      `LLM_FALLBACK_MODEL=ocg/deepseek-v4.1-flash`, `HINDSIGHT_BANK_ID=premortem`
+- [ ] Hindsight container up with `HINDSIGHT_API_LLM_PROVIDER=openai`, base URL `$NINEROUTER_URL/v1`,
+      `HINDSIGHT_API_EMBEDDINGS_PROVIDER=local` (exact command in `docs/MODELS.md`)
+- [ ] `GET :8888/health` responds; Control Plane on `:9999` loads
+- [ ] `banks.test_bank_llm(bank_id)` passes
+- [ ] One retain -> recall round trip produces an `observation` with a proof count
+- [ ] `reflect` with `response_schema` returns structured output through 9Router
+- [ ] **If any of the above fails, stop.** Swap `HINDSIGHT_LLM_MODEL` to `ocg/deepseek-v4.1-flash` and
+      re-run. Do not start app code on a broken memory layer
 
-## Day 1 — build, 4h
+## Day 1 — build, 5h
 
-- [ ] `seed.py`: 40 launches, 6 services, ~14 months, all 6 patterns from `docs/DATA.md`, including the
-      clean mirrors. **Protect this block, it is the project.**
-- [ ] `seed.py` writes `data/ground_truth.json` from the pattern table, not from the LLM
+- [ ] `api/app/corpus.py`: 40 launches, 6 services, ~14 months, all 6 patterns from `docs/DATA.md`, including
+      the clean mirrors. **Protect this block, it is the project.**
+- [ ] `api/app/seed.py` writes `data/ground_truth.json` from the pattern table, not from the LLM
 - [ ] `retain_batch` the corpus with `timestamp` = launch date and `metadata` = launch ID / service /
       change class / pattern / outcome
 - [ ] `banks.recover_consolidation(bank_id)` then assert observations exist with proof counts >= 2
 - [ ] Bank config: mission, 5 directives, disposition 4/5/2 — then `get_bank_config` and print it
-- [ ] `lookalike.py`: `recall_precedents` with `query_timestamp`, deterministic `rank`, `MIN_PROOF` gate
-- [ ] `reflect(response_schema=FLIP_SCHEMA)` for flip-detail extraction, `include_facts=True`
+- [ ] `api/app/lookalike.py`: `recall_precedents` with `query_timestamp`, deterministic `rank`, `MIN_PROOF`
+- [ ] Flip-detail via 9Router **JSON mode** (`response_format: json_object`); never `tool_choice: "auto"`
 - [ ] `no_precedent` path returns coverage % plus the two nearest declined precedents
-- [ ] `ledger.py`: 4 flags, 3 ignored, 2 costed, promoted class feeds `rank(prefer=...)`
-- [ ] `app.py`: one screen, three presets, `MEMORY=on/off` toggle, precedent cards with proof + trend,
-      flip detail, sidebar ledger + bank stats, prompt preview button, consolidation button
-- [ ] `replay()` run over all 40 launches, cached to `data/replay.json`
-- [ ] `tests/run_all.py`: asserts on preset A returns a precedent, preset C returns `no_precedent`,
-      ledger promotion changes preset A's top card, ground-truth totals match the corpus
+- [ ] `api/app/ledger.py`: 4 flags, 3 ignored, 2 costed, promoted class feeds `rank(prefer=...)`
+- [ ] `Assessment` contract frozen and served by `/api/assess` before any frontend code
+- [ ] `replay.py` over all 40 launches, cached to `data/replay.json`; `/api/metrics` serves it
+- [ ] `web/`: one screen, three presets, `MEMORY=on/off`, precedent cards with citations and trend badges,
+      **flip detail as the hero card**, declined list, ledger, metrics row, prompt preview
+- [ ] `api/tests/`: preset A returns a precedent, preset C returns `no_precedent`, ledger promotion changes
+      preset A's top card, ground-truth totals match the corpus
+- [ ] `web/` gate green: `tsc --noEmit`, lint, vitest, build (Playwright if a browser is installable)
 - [ ] **Freeze the real precision/coverage numbers** into `PLAN.md` and the README. Do not tune the write-up
       to match a target; tune `MIN_PROOF` or corpus density, then re-run
 
@@ -38,8 +45,8 @@ Two days. Day 1 build, day 2 video + content. Tick in order, nothing out of sequ
 - [ ] All three presets exercised end to end, twice
 - [ ] `data/replay.json` present so the metric charts render instantly
 - [ ] Prompt preview renders without cutting off
-- [ ] Streamlit restarted, cache cleared, browser zoom fixed, notifications silenced, other tabs closed
-- [ ] Terminal font size up; no secrets visible on screen (check the sidebar for the API key)
+- [ ] Containers restarted clean, browser cache cleared, zoom fixed, notifications silenced, other tabs closed
+- [ ] No secrets on screen: check the browser devtools network tab and the `.env` is not open in an editor
 - [ ] Recording tool set to 1080p, mic tested, 20 seconds of silent room tone captured for edits
 
 ## Day 2 — video + content
@@ -54,11 +61,15 @@ Two days. Day 1 build, day 2 video + content. Tick in order, nothing out of sequ
 ## Submission
 
 - [ ] Repo flipped from private to public
-- [ ] README: setup, the 5-year-old explainer, a "How Hindsight is used" section naming
+- [ ] README: `docker compose up`, the 5-year-old explainer, a "How Hindsight is used" section naming
       `retain` / `recall(query_timestamp)` / `reflect(response_schema)` / observations with proof counts and
-      freshness trends / `directives` / `disposition` / `recover_consolidation` / `get_memories_timeseries`
+      freshness trends / `directives` / `disposition` / `recover_consolidation` / `preview_prompt` /
+      `get_memories_timeseries`
+- [ ] README states the stack honestly: self-hosted Hindsight (FOSS) driving 9Router, local embeddings
+- [ ] Control Plane (`:9999`) works so judges can inspect banks directly
 - [ ] Architecture diagram or the ASCII tree from `docs/ARCHITECTURE.md` in the README
-- [ ] `.env.example` committed, `.env` confirmed untracked (`git status --porcelain` clean of secrets)
+- [ ] `.env.example` committed, `.env` untracked; `git status --porcelain` and `git log -p -- .env` clean
+- [ ] `NEXT_PUBLIC_API_BASE_URL` passed as both build arg and runtime env in compose
 - [ ] Demo video link in the README and in the submission form
 - [ ] Live demo rehearsed twice against a fresh seed
 - [ ] One paragraph stating exactly how Hindsight memory is used, per the submission requirement

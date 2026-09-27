@@ -8,12 +8,20 @@ __pycache__/
 .venv/
 venv/
 
-# data caches (regenerate from seed.py)
+# data caches (regenerate from seed.py) - keep ground_truth.json tracked
 data/*.csv
-data/*.json
 
-# streamlit
-.streamlit/secrets.toml
 
 # os
 .DS_Store
+
+# next.js
+web/node_modules/
+web/.next/
+web/out/
+next-env.d.ts
+
+# python api
+api/.venv/
+api/__pycache__/
+.pytest_cache/

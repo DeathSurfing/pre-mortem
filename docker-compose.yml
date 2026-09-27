@@ -1,0 +1,47 @@
+services:
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:latest
+    environment:
+      HINDSIGHT_API_LLM_PROVIDER: openai
+      HINDSIGHT_API_LLM_BASE_URL: ${NINEROUTER_URL}/v1
+      HINDSIGHT_API_LLM_API_KEY: ${NINEROUTER_API_KEY}
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_LLM_MODEL:-gareebi}
+      HINDSIGHT_API_EMBEDDINGS_PROVIDER: local
+      HINDSIGHT_API_EMBEDDINGS_LOCAL_MODEL: BAAI/bge-small-en-v1.5
+      HINDSIGHT_API_LLM_TIMEOUT: "180"
+      HINDSIGHT_API_LLM_MAX_RETRIES: "3"
+    ports:
+      - "8888:8888"
+      - "9999:9999"
+    volumes:
+      - hindsight-pg:/home/hindsight/.pg0
+
+  api:
+    build: ./api
+    environment:
+      HINDSIGHT_API_URL: http://hindsight:8888
+      HINDSIGHT_BANK_ID: ${HINDSIGHT_BANK_ID:-premortem}
+      NINEROUTER_URL: ${NINEROUTER_URL}
+      NINEROUTER_API_KEY: ${NINEROUTER_API_KEY}
+      LLM_MODEL: ${LLM_MODEL:-gareebi}
+      LLM_FALLBACK_MODEL: ${LLM_FALLBACK_MODEL:-ocg/deepseek-v4.1-flash}
+      MIN_PROOF: ${MIN_PROOF:-1}
+    ports:
+      - "8000:8000"
+    depends_on:
+      - hindsight
+
+  web:
+    build:
+      context: ./web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  hindsight-pg:

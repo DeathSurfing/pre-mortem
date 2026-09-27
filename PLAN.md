@@ -59,7 +59,8 @@ cannot see later launches. Lookahead is impossible, not promised.
 
 ### Technical implementation (20%) — small, clean, honest
 
-~400 lines across four files. No broker, no third-party API beyond Hindsight + Groq, no auth, no DB.
+Small and split: a FastAPI service (corpus, seeding, ranking, replay, ledger) and a Next.js screen. No broker,
+no third-party AI API beyond 9Router, no auth, no database of our own (Hindsight owns the memory).
 
 Edge cases handled on camera, because handling them is what earns this axis:
 - **no precedent** -> `no_precedent` response, never a stretched analogy;
@@ -144,26 +145,28 @@ second use case would cost the build day.
 
 | Time | Work |
 |---|---|
-| 0:00-0:30 | Hindsight Cloud bank + key, Groq key, `pip install hindsight-client streamlit`, smoke-test retain/recall/reflect |
-| 0:30-1:30 | `seed.py` — 40 interlocked launches, 6 services, realistic symptom lines, outcomes, fixes. Retain with metadata. Settle. **Biggest block, protect it** |
-| 1:30-2:15 | `lookalike.py` — recall the pending change, rank by proof count + recency + trend, flip-detail extraction via one `reflect(response_schema=...)` |
-| 2:15-2:45 | `ledger.py` — retain ignored flags and their outcomes; make the agent lead with the ignored class |
-| 2:45-3:30 | `app.py` — one Streamlit screen: diff left, precedents right, risk number top, flip detail bottom, `MEMORY=on/off` toggle, `no_precedent` state |
-| 3:30-4:00 | Bank `mission` / `directives` / `disposition`, 2 `mental_models`, replay the window, freeze the precision/coverage numbers, README + architecture sketch, raw screen capture |
+| 0:00-0:50 | Hindsight container up on 9Router (`docs/MODELS.md`), `api/scripts/smoke.py` green: health, `test_bank_llm`, retain->recall->reflect with `response_schema`. **Gate: do not write app code until this passes** |
+| 0:50-1:50 | `api/`: corpus + `seed.py` — 40 interlocked launches, retain with metadata, `recover_consolidation`, `ground_truth.json`. **Biggest block, protect it** |
+| 1:50-2:35 | `api/`: `lookalike.py` — recall with `query_timestamp`, deterministic `rank`, flip-detail via 9Router JSON mode, `no_precedent` path. Freeze the `Assessment` contract |
+| 2:35-3:00 | `api/`: `ledger.py` + `replay.py` — flags and promotion, epoch replay cached to `replay.json`, `/api/metrics` |
+| 3:00-4:20 | `web/`: one screen — change panel, memory toggle, risk banner, precedent cards with citations, **flip detail as the hero**, declined list, ledger, metrics charts, prompt preview |
+| 4:20-4:40 | Bank `mission` / `directives` / `disposition`, 2 `mental_models`, three presets end to end, freeze numbers, raw screen capture |
+| 4:40-5:00 | `/health` + `configProblems()`, docker-compose wiring, `.env.example`, README update |
 
 **Cut list, in order if behind:**
-1. Flip-detail `response_schema` -> loose JSON parsing.
-2. Structured precedent card -> plain text list with launch IDs.
+1. Metrics charts -> a static numbers row from `replay.json`. Do not build a charting layer for four numbers.
+2. Prompt-preview panel -> drop. Nice-to-have, not scored.
 3. 40 launches -> 25. Keep the interlock, lose the volume.
-4. Ignored-warning automation -> one hardcoded example, still shown on screen.
-5. **Never cut:** `MEMORY=on/off` toggle, proof counts as confidence, `no_precedent` refusal, flip-detail
-   line, ignored-warning ledger.
+4. Ledger automation -> one hardcoded promoted class, still shown changing the ordering.
+5. Framer Motion transitions -> CSS only.
+6. **Never cut:** `MEMORY=on/off` toggle, proof counts as confidence, `no_precedent` refusal (with the
+   declined list), flip-detail hero card, ignored-warning ledger, per-card citations.
 
 ## Day 2 — video and content deliverables
 
 - 3 min video: use the five beats above. Record the flip-detail and `no_precedent` beats twice so there is
   a clean take. The 5-year-old explainer in the README is the 20-second cold open, verbatim.
-- Article: lead with the ignored-warning ledger and the flip-detail idea. Include the Hindsight feature
+- Article: lead with the ignored-warning ledger and the flip-detail idea. Note the stack honestly: self-hosted Hindsight (FOSS) driving 9Router, local embeddings, FastAPI + Next.js. Include the Hindsight feature
   table, the reproducibility note (print the seed's ground truth), and the `query_timestamp` honesty point.
 - Social post per team member, plus a short video cut, per the content guide.
 - Submission: private repo made public at submission time, README with setup, a "How Hindsight is used"
@@ -178,10 +181,20 @@ second use case would cost the build day.
 | Reads as similarity search over incidents | Lead with flip detail and the ignored-warning ledger inside the first 30 seconds; say "difference", not "similar" |
 | Reads as another incident agent | Open with the pending change, not with incident history |
 | Numbers not reproducible | Print the seed's ground truth, let a judge spot-check one flag |
-| Observations not consolidated before recording | Seed early, verify with `client.memories.list`; reflect re-verifies stale observations against raw facts anyway |
-| Groq function-calling / JSON errors | try/except, validate, one repair retry, JSON-mode fallback |
-| Reflect latency (agentic loop, up to 10 iterations) | `budget="low"`, small `max_tokens`, `mental_models` for the canned demo questions, pre-run the filmed beats |
+| Observations not consolidated before recording | `recover_consolidation()` at seed time and a button in the UI; reflect re-verifies stale observations against raw facts anyway |
+| 9Router quirks | JSON mode works, `tool_choice: "auto"` does **not**; never rely on auto tool calling. `kimchi/*` and `openrouter/*` lanes are exhausted (402/403), so pin models |
+| Hindsight reflect latency (agentic loop, up to 10 iterations) | `budget="low"`, small `max_tokens`, `mental_models` for the canned demo questions, precomputed replay, `HINDSIGHT_API_LLM_TIMEOUT=180` |
 | Scope creep | One workflow, one persona, one metric. Cut the second use case without negotiating |
+
+## Stack decisions (locked)
+
+| Decision | Choice | Reason |
+|---|---|---|
+| LLM for app + Hindsight | 9Router, `gareebi` (fallback `ocg/deepseek-v4.1-flash`) | already provisioned, one key, combo fallback |
+| Hindsight | FOSS self-host, not Cloud | Cloud's LLM provider is not configurable, so it cannot use 9Router. `docs/MODELS.md` |
+| Embeddings | Hindsight local (`BAAI/bge-small-en-v1.5`) | no external embedding key; 9Router's `openrouter/` embedding lane is dead |
+| UI | Next.js App Router + Tailwind, split from the backend | UI is 15% of the score and is what judges watch |
+| Backend | FastAPI, owns all Hindsight access | one contract, testable without a browser, precomputed replay |
 
 ## Stated scope
 
