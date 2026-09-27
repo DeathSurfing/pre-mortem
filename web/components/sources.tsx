@@ -22,7 +22,7 @@ export function SourcePill({ p, cited }: { p: Precedent; cited: boolean }) {
       : "border-[var(--rule-strong)] text-ink-muted";
 
   return (
-    <span className="group relative inline-block">
+    <span className="group relative inline-block whitespace-nowrap">
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
@@ -120,5 +120,48 @@ export function SourceRow({
         hover a source to preview it, click to read the full record
       </p>
     </div>
+  );
+}
+
+
+/**
+ * Decision ids that appear inline in the prose, rendered as pills.
+ *
+ * Why: the answer names ids in sentences ("cost us 6.2 points in D-2025-0002 and D-2025-0013"), and a bare
+ * mono id there is a dead end — the reader has to hunt for the pill row below. Turning inline mentions into
+ * the same pill means any id you can read, you can hover for the preview and click for the full record.
+ *
+ * Ids that are NOT in the precedent set (e.g. one the corpus check could not verify) render as plain mono
+ * text, so nothing is silently dressed up as evidence.
+ */
+export function AnnotatedProse({
+  text,
+  precedents,
+  className,
+}: {
+  text: string;
+  precedents: Precedent[];
+  className?: string;
+}) {
+  const byId = new Map(precedents.map((p) => [p.launch_id, p]));
+
+  // Decision ids look like D-2025-0013 / L-2026-0412. Word-boundary guarded so ids inside filenames or
+  // longer tokens are not matched.
+  const parts = text.split(/(\b[DLA]-\d{4}-\d{3,4}\b)/g);
+
+  return (
+    <span className={className}>
+      {parts.map((part, i) => {
+        const hit = byId.get(part);
+        if (hit) {
+          return (
+            <span key={i} className="mx-0.5 inline-block align-baseline">
+              <SourcePill p={hit} cited />
+            </span>
+          );
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </span>
   );
 }

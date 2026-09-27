@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, BookOpen, CircleAlert, CircleCheck, TriangleAlert } from "lucide-react";
+import { ArrowUp, BookOpen, CircleAlert, CircleCheck, PanelLeft, TriangleAlert } from "lucide-react";
 import {
   api,
   streamRedflag,
@@ -12,7 +12,9 @@ import {
   type PromptPreset,
 } from "@/lib/api";
 import { DecisionId, Label } from "@/components/editorial";
-import { SourceRow } from "@/components/sources";
+import { AnnotatedProse, SourceRow } from "@/components/sources";
+import { GuessPanel } from "@/components/guess";
+import { GuessBlock } from "@/lib/api";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
 
@@ -114,6 +116,7 @@ type Turn = {
   cited?: string[];
   uncited?: string[];
   unverified?: string[];
+  guess?: GuessBlock | null;
   error?: string;
   busy: boolean;
 };
@@ -125,6 +128,7 @@ export default function Page() {
   const [ledger, setLedger] = useState<Ledger | null>(null);
   const [health, setHealth] = useState<Record<string, unknown> | null>(null);
   const [showEvidence, setShowEvidence] = useState(false);
+  const [navOpen, setNavOpen] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const busyRef = useRef(false);
 
@@ -158,6 +162,7 @@ export default function Page() {
           patch((t) => ({ ...t, risk: e.risk, confidence: e.confidence, noPrecedent: e.no_precedent, rules: e.rules, status: "writing the review" }));
         else if (e.type === "precedents") patch((t) => ({ ...t, precedents: e.precedents, declined: e.declined }));
         else if (e.type === "delta") patch((t) => ({ ...t, streamed: t.streamed + e.text }));
+        else if (e.type === "guess") patch((t) => ({ ...t, guess: e }));
         else if (e.type === "done")
           patch((t) => ({
             ...t,
@@ -185,7 +190,15 @@ export default function Page() {
     <div className="min-h-screen bg-paper">
       {/* masthead */}
       <header className="rule-b">
-        <div className="mx-auto flex max-w-[1180px] items-center gap-4 px-6 py-4">
+        <div className="mx-auto flex max-w-[1180px] items-center gap-3 px-6 py-4">
+          <button
+            onClick={() => setNavOpen((v) => !v)}
+            aria-label={navOpen ? "Hide context panel" : "Show context panel"}
+            aria-expanded={navOpen}
+            className="-ml-1 flex size-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-[var(--paper-sunk)] hover:text-ink"
+          >
+            <PanelLeft className="size-[15px]" strokeWidth={1.8} />
+          </button>
           <span className="font-display text-[17px] font-semibold tracking-tight text-ink">
             pre&#8209;mortem
           </span>
@@ -209,24 +222,95 @@ export default function Page() {
         </div>
       </header>
 
-      {/* ledger strip: the calibration signal, always visible */}
-      {ledger && ledger.promoted_classes.length > 0 && (
-        <div className="bg-[var(--paper-sunk)] rule-b">
-          <div className="mx-auto flex max-w-[1180px] flex-wrap items-center gap-x-3 gap-y-1 px-6 py-2.5 text-[12.5px] text-ink-muted">
-            <span className="text-ink-faint">This company was warned and went ahead anyway on</span>
-            {ledger.promoted_classes.map((c) => (
-              <span key={c} className="font-mono text-[12px] text-ink-soft">
-                {c}
-              </span>
-            ))}
-            <span className="text-ink-faint">
-              {ledger.ignored} of {ledger.flags} warnings ignored, {ledger.costed} of those cost something
-            </span>
-          </div>
-        </div>
-      )}
+      {/* Sidebar: everything that is context rather than answer lives here, collapsed by default.
+          The ledger used to be a permanent strip under the masthead; it is genuine context but it is not
+          the answer, so it belongs in a drawer the reader opens deliberately. */}
+      <div className="mx-auto flex max-w-[1180px] gap-0 px-6">
+        <aside
+          className={`shrink-0 overflow-hidden border-r border-rule transition-[width] duration-200 ${
+            navOpen ? "w-[268px] pr-6" : "w-0"
+          }`}
+        >
+          <div className="w-[268px] py-8">
+            <div className="flex items-center gap-2">
+              <Label>Context</Label>
+              <button
+                onClick={() => setNavOpen(false)}
+                className="ml-auto text-[12px] text-ink-faint hover:text-ink"
+                aria-label="Collapse context panel"
+              >
+                collapse
+              </button>
+            </div>
 
-      <main className="mx-auto max-w-[1180px] px-6 pb-56">
+            {ledger && (
+              <section className="mt-5">
+                <p className="text-[13px] leading-relaxed text-ink-soft">
+                  This is the reviewer&apos;s calibration: the decisions where a warning was raised and the
+                  company went ahead anyway. Where that pattern repeats, the reviewer now leads with it.
+                </p>
+                <dl className="mt-4 space-y-2.5">
+                  <div className="flex items-baseline justify-between">
+                    <dt className="text-[12px] text-ink-faint">warnings raised</dt>
+                    <dd className="font-mono text-[13px] text-ink-soft">{ledger.flags}</dd>
+                  </div>
+                  <div className="flex items-baseline justify-between">
+                    <dt className="text-[12px] text-ink-faint">ignored anyway</dt>
+                    <dd className="font-mono text-[13px] text-ink-soft">{ledger.ignored}</dd>
+                  </div>
+                  <div className="flex items-baseline justify-between">
+                    <dt className="text-[12px] text-ink-faint">of those, cost something</dt>
+                    <dd className="font-mono text-[13px] text-risk-high">{ledger.costed}</dd>
+                  </div>
+                </dl>
+
+                {ledger.promoted_classes.length > 0 && (
+                  <>
+                    <Label className="mt-5">Now leads with</Label>
+                    <ul className="mt-2.5 space-y-1.5">
+                      {ledger.promoted_classes.map((c) => (
+                        <li key={c} className="font-mono text-[12px] text-ink-soft">
+                          {c}
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+
+                {ledger.rows && ledger.rows.length > 0 && (
+                  <details className="mt-5">
+                    <summary className="cursor-pointer text-[12px] text-ink-faint hover:text-ink-muted">
+                      the {ledger.rows.length} decisions
+                    </summary>
+                    <ul className="mt-3 space-y-3">
+                      {ledger.rows.map((r) => (
+                        <li key={r.decision_id} className="text-[12.5px] text-ink-muted">
+                          <DecisionId id={r.decision_id} className="text-[12px]" />
+                          {r.costed && <span className="ml-1.5 text-risk-high">cost something</span>}
+                          {r.ignored && !r.costed && <span className="ml-1.5">ignored</span>}
+                          <p className="mt-0.5 leading-relaxed">{r.text.slice(0, 150)}</p>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </section>
+            )}
+
+            {health && (
+              <section className="mt-7">
+                <Label>Engine</Label>
+                <ul className="mt-2.5 space-y-1.5 text-[12px] text-ink-muted">
+                  <li>verdict: deterministic ranker</li>
+                  <li>classifier: {laHealth?.loaded ? "local, loaded" : laHealth?.enabled ? "local, loading" : "off"}</li>
+                  <li>memory: Hindsight, both banks readable</li>
+                </ul>
+              </section>
+            )}
+          </div>
+        </aside>
+
+        <main className="min-w-0 flex-1 pl-0 md:pl-6">
         {empty && (
           <div className="grid gap-12 py-14 lg:grid-cols-[minmax(0,1fr)_360px]">
             <div className="measure">
@@ -327,17 +411,25 @@ export default function Page() {
                   {t.opinion?.headline ? (
                     <>
                       <p className="font-display !mb-4 text-[19px] leading-snug text-ink">
-                        {t.opinion.headline}
+                        <AnnotatedProse text={t.opinion.headline} precedents={t.precedents ?? []} />
                       </p>
-                      {t.opinion.why && <p className="text-[15px] leading-relaxed text-ink-soft">{t.opinion.why}</p>}
+                      {t.opinion.why && (
+                        <p className="text-[15px] leading-relaxed text-ink-soft">
+                          <AnnotatedProse text={t.opinion.why} precedents={t.precedents ?? []} />
+                        </p>
+                      )}
                     </>
                   ) : (
                     <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-ink-soft">
-                      {t.streamed}
+                      <AnnotatedProse text={t.streamed} precedents={t.precedents ?? []} />
                       {t.busy && <span className="caret" />}
                     </p>
                   )}
                 </div>
+
+                {/* The guess is passed through the same pill-aware prose renderer so a fabricated id
+                    cannot appear as a live-looking citation. */}
+                {t.guess && <GuessPanel guess={t.guess} />}
 
                 {/* the difference: the one claim that is not a similarity search */}
                 <aside className="lg:pt-1">
@@ -345,7 +437,10 @@ export default function Page() {
                     <div className="fade-up border-l-2 border-accent bg-[var(--accent-wash)] px-4 py-3.5">
                       <Label className="text-accent-deep">The difference</Label>
                       <p className="mt-2 text-[13.5px] leading-relaxed text-ink-soft">
-                        {t.opinion.differentiating_detail}
+                        <AnnotatedProse
+                          text={t.opinion.differentiating_detail}
+                          precedents={t.precedents ?? []}
+                        />
                       </p>
                     </div>
                   )}
@@ -353,7 +448,10 @@ export default function Page() {
                     <div className="mt-5">
                       <Label>Make it safe</Label>
                       <p className="mt-2 text-[13.5px] leading-relaxed text-ink-soft">
-                        {t.opinion.suggested_guardrail}
+                        <AnnotatedProse
+                          text={t.opinion.suggested_guardrail}
+                          precedents={t.precedents ?? []}
+                        />
                       </p>
                     </div>
                   )}
@@ -364,7 +462,9 @@ export default function Page() {
                         {t.opinion.open_questions.map((q, i) => (
                           <li key={i} className="flex gap-2.5 text-[13.5px] leading-relaxed text-ink-soft">
                             <span className="mt-[7px] size-1 shrink-0 rounded-full bg-ink-faint" />
-                            {q}
+                            <span>
+                              <AnnotatedProse text={q} precedents={t.precedents ?? []} />
+                            </span>
                           </li>
                         ))}
                       </ul>
@@ -414,7 +514,8 @@ export default function Page() {
           </article>
         ))}
         <div ref={endRef} />
-      </main>
+        </main>
+      </div>
 
       {/* composer */}
       <div className="fixed inset-x-0 bottom-0 border-t border-rule bg-paper/95 backdrop-blur">

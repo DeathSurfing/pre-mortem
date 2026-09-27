@@ -14,6 +14,8 @@ only classifies the prompt and writes prose. That separation is what makes the n
 """
 from __future__ import annotations
 
+import re
+
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -69,6 +71,41 @@ OPINION_SCHEMA = {
     },
 }
 
+def _guess_block(parsed: dict[str, Any] | None, domain: str, dtype: str) -> dict[str, Any]:
+    """Shape the no-precedent guess, and strip anything that looks like a fabricated citation.
+
+    Defence in depth: the prompt forbids ids, but a model can still emit one, and a fabricated decision id
+    inside a block labelled "guess" is exactly the failure this product exists to avoid. Scan for the id
+    pattern and drop it rather than passing it through.
+    """
+    if not parsed:
+        return {"available": False, "reason": "the model did not return a usable guess"}
+    out = {
+        "available": True,
+        "verdict": str(parsed.get("verdict") or "").strip(),
+        "guess": str(parsed.get("guess") or parsed.get("body") or "").strip(),
+        "confidence": str(parsed.get("confidence") or "LOW").strip().upper(),
+        "watch": parsed.get("watch") or [],
+        "domain": domain,
+        "decision_type": dtype,
+    }
+    if isinstance(out["watch"], str):
+        out["watch"] = [w.strip("- ").strip() for w in out["watch"].splitlines() if w.strip()]
+    # strip fabricated citations from every text field
+    id_re = re.compile(r"\b[DLA]-\d{4}-\d{3,4}\b")
+    if id_re.search(out["guess"]) or id_re.search(out["verdict"]):
+        out["guess"] = id_re.sub("[unverifiable reference removed]", out["guess"])
+        out["verdict"] = id_re.sub("[unverifiable reference removed]", out["verdict"])
+        out["stripped_fabricated_ids"] = True
+    if out["confidence"] not in ("LOW", "MEDIUM", "HIGH"):
+        out["confidence"] = "LOW"
+    # a no-precedent guess can never be high confidence and honest at the same time
+    if out["confidence"] == "HIGH":
+        out["confidence"] = "MEDIUM"
+        out["confidence_capped"] = True
+    return out
+
+
 STREAM_OPINION_SYSTEM = (
     "You are a business decision reviewer inside a company. You are given a decision the user is "
     "considering and the company's OWN recalled past decisions in the same domain.\n"
@@ -96,6 +133,30 @@ STREAM_OPINION_SYSTEM = (
 BASELINE_SYSTEM = (
     "You are reviewing a business decision. No company history is available to you. "
     "Give a short opinion in three bullets."
+)
+
+# Used ONLY when the company has no precedent. The refusal is stated first and stays true; the guess is a
+# separate, fenced block that is forbidden from citing memory, so a general-model opinion can never be
+# mistaken for the company's own recorded experience. That separation is the whole point of the product.
+NO_PRECEDENT_GUESS_SYSTEM = (
+    "You are a business decision reviewer inside a company. The company has NO recorded precedent for "
+    "this decision, and that has already been stated to the user.\n"
+    "Your job is to add an explicitly-labelled guess, not a verdict.\n"
+    "Reply with a single JSON object with exactly these keys and no others:\n"
+    '  "verdict"    one sentence stating plainly that there is not enough company history to judge this.\n'
+    '  "guess"      2-4 sentences of general best practice for this kind of decision, written as a guess. '
+    "This is what a competent advisor would say with no knowledge of this company's history.\n"
+    '  "watch"      an array of up to 3 short strings: risks or questions that would change the decision.\n'
+    '  "confidence" exactly one of "LOW", "MEDIUM", "HIGH", meaning how much weight the guess deserves. '
+    "It must be LOW unless this is genuinely textbook territory.\n"
+    "Rules, in order of importance:\n"
+    "1. This is a guess from general practice, NOT company memory. Never cite a decision id. You have not "
+    "been shown the company's records, so any id you write would be fabricated. Writing one is a failure.\n"
+    "2. Never invent a figure, a past event, or a company-specific fact.\n"
+    "3. Do not pretend to certainty. The GUESS label and the CONFIDENCE level are how the user knows this "
+    "is not grounded in their history.\n"
+    "4. Be useful. A flat 'I cannot help' is a non-answer; give the honest general read.\n"
+    'Output JSON only. Example shape: {"verdict": "...", "guess": "...", "watch": ["..."], "confidence": "LOW"}'
 )
 
 
@@ -222,6 +283,17 @@ async def redflag(text: str, *, memory: bool = True, promoted: set[str] | None =
             f"{len(out['declined'])} neighbouring decisions were considered and declined."
         )
         out["facts_used"] = []
+        # The refusal is the answer; the guess is opt-in extra, and is labelled so it cannot be confused
+        # with a memory-grounded verdict.
+        guessed, gmeta = await chat_json(
+            NO_PRECEDENT_GUESS_SYSTEM,
+            f"DECISION THE USER IS CONSIDERING\n{text}\n\n"
+            f"CLASSIFIED AS: domain={domain}, type={dtype}\n"
+            "There is no company precedent. Give the refusal-consistent verdict plus a labelled guess.",
+            max_tokens=1500,
+        )
+        out["engine"]["llm_calls"] += gmeta.get("llm_calls", 0)
+        out["guess"] = _guess_block(guessed, domain, dtype)
         return out
 
     user = (
@@ -353,7 +425,20 @@ async def redflag_stream(text: str, *, promoted: set[str] | None = None):
                    f"{len(declined)} neighbouring decisions were considered and declined.")
             for chunk in _chunks(msg):
                 yield ev("delta", text=chunk)
-            yield ev("done", engine={"ranker": "deterministic", "llm_calls": cmeta.get("llm_calls", 0),
+            # The refusal above is the answer. The guess below is a separate, labelled block so it can
+            # never be mistaken for company memory: it is forbidden from citing an id and is scanned for
+            # one before it reaches the client.
+            yield ev("status", message="no precedent, drafting a labelled guess", step="guess")
+            guessed, gmeta = await chat_json(
+                NO_PRECEDENT_GUESS_SYSTEM,
+                f"DECISION THE USER IS CONSIDERING\n{text}\n\n"
+                f"CLASSIFIED AS: domain={domain}, type={dtype}\n"
+                "There is no company precedent. Give the refusal-consistent verdict plus a labelled guess.",
+                max_tokens=1500,
+            )
+            yield ev("guess", **(_guess_block(guessed, domain, dtype)))
+            yield ev("done", engine={"ranker": "deterministic",
+                                     "llm_calls": cmeta.get("llm_calls", 0) + gmeta.get("llm_calls", 0),
                                      "no_precedent": True, "model": s.llm_model},
                      facts_used=[], citations_in_prose=[], attribution_unverified=[])
             return

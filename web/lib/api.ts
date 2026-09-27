@@ -51,8 +51,26 @@ export type StreamEvent =
   | { type: "verdict"; risk: "high" | "medium" | "low" | "unknown"; confidence: number; no_precedent: boolean; rules: string; relaxed: boolean }
   | { type: "precedents"; precedents: Precedent[]; declined: Declined[] }
   | { type: "delta"; text: string }
+  | ({ type: "guess" } & GuessBlock)
   | { type: "done"; opinion?: Opinion | null; engine: Record<string, unknown>; facts_used: string[]; citations_in_prose: string[]; uncited_facts?: string[]; attribution_unverified?: string[] }
   | { type: "error"; message: string };
+
+/**
+ * A no-precedent guess. Deliberately a distinct shape from Opinion: the UI renders it in its own fenced
+ * block so a general-model opinion is never displayed as if it were company memory.
+ */
+export type GuessBlock = {
+  available: boolean;
+  reason?: string;
+  verdict?: string;
+  guess?: string;
+  confidence?: "LOW" | "MEDIUM" | "HIGH";
+  watch?: string[];
+  domain?: string;
+  decision_type?: string;
+  stripped_fabricated_ids?: boolean;
+  confidence_capped?: boolean;
+};
 
 export type PromptPreset = {
   key: string;
