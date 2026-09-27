@@ -121,7 +121,7 @@ decisions themselves expandable below that.
 | 9 | CONFIRM FIRST questions | live API |
 | 10 | Citation list: three ids, evidence counts, outcome labels | live API |
 | 11 | "also considered and declined" expanded | live API |
-| 12 | Preset C: `No precedent` + declined list | live API |
+| 12 | Preset C: `No precedent`, then the full-width "If I had to guess" panel (badged low confidence) | live API |
 | 13 | Preset B: hiring, `High risk`, bad precedents | live API |
 | 14 | Drawer open: calibration numbers + promoted classes | — |
 | 15 | `/health` showing `laya: loaded true` (technical judges) | live API |
@@ -130,9 +130,21 @@ decisions themselves expandable below that.
 | 18 | Toggle the theme to dark, then back to system | — |
 | 19 | Preset D: `compliance`, citing the reopened finding + its mirror | live API |
 | 20 | Preset E: `partnership`, citing the exclusivity loss + its mirror | live API |
+| 21 | **Query mode:** type "what caused the most loss in the year?" — it searches the records and answers with cited ids, no verdict | live API |
+| 22 | **Chat mode:** type "hey, how are you doing today?" — a plain reply, no verdict, no ids | live API |
+| 23 | **Follow-up:** after shot 3's review, ask "what if we cap it at 15 percent with a one-year term?" — conversational, and the ids stay pills | live API |
+| 24 | Reasoning trace: expand the collapsed "reasoning" disclosure under an answer | live API |
 
 Shot 16 matters: it proves the thing is not scripted. Type a decision the corpus does not cover and let it
 refuse on camera.
+
+Shots 21-23 matter more than they look: they are the answer to "is this just a red-flagger?". It is a
+chatbot that switches into review when a decision is put to it. Say that out loud while doing 21 and 22,
+because a judge who only sees the risk banner will assume it is one-trick.
+
+Shot 24 is for the technical judges. The reasoning trace is real model output we were throwing away; it is
+collapsed by default so it never competes with the answer, but opening it shows the thing actually reasons
+rather than retrieving a canned verdict.
 
 ## If a judge asks about the stack
 
@@ -140,6 +152,10 @@ refuse on camera.
 > existing gateway. Classification is local: Laya, a 421-million-parameter System One model, ONNX int4,
 > about a gig of RAM, no API call and no per-request cost. The UI is Next.js streaming server-sent events
 > from a FastAPI service that owns every memory call.
+>
+> It routes between three modes. Laya decides, because its domain probability separates them and it is
+> free: a greeting scores 0.29, a real decision 0.99. A question about the records is its own mode, because
+> answering it from general knowledge would be the one thing this product must never do.
 
 Then the honest caveat, which reads as competence rather than weakness:
 
