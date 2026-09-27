@@ -24,5 +24,8 @@ COPY --from=build /app/next.config.ts ./next.config.ts
 COPY --from=build /app/tsconfig.json ./tsconfig.json
 COPY --from=build /app/app ./app
 COPY --from=build /app/lib ./lib
+# public/ holds the self-hosted woff2 fonts. Without this the app builds and serves, but every font
+# request 404s and the page silently falls back to the browser default serif.
+COPY --from=build /app/public ./public
 EXPOSE 3000
 CMD ["npm", "run", "start"]
