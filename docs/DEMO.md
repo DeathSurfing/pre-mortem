@@ -146,6 +146,12 @@ Shot 24 is for the technical judges. The reasoning trace is real model output we
 collapsed by default so it never competes with the answer, but opening it shows the thing actually reasons
 rather than retrieving a canned verdict.
 
+**The question a judge will ask about shot 21.** "What if I say *I want to do X, and what has burned us before?*"
+That message does both, and the tie-break is deliberate: it gets a **review**, not a records lookup. A review
+searches the records and cites them anyway, so it answers the history question *and* gives the judgement;
+`query` would answer the question and withhold the judgement. Preset E is exactly this shape, which is why
+shot 20 shows a verdict rather than a plain answer. Say that in one line if it comes up.
+
 ## If a judge asks about the stack
 
 > Hindsight runs on Vectorize Cloud and holds the memory. Our own prose calls go to OpenCode Go, our
