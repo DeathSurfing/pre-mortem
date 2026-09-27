@@ -59,10 +59,21 @@ def _precedent_block(precedents: list[dict[str, Any]]) -> str:
     for p in precedents[:6]:
         facts = p.get("all_texts") or ([p.get("text")] if p.get("text") else [])
         body = "\n".join(f"      - {f}" for f in facts if f)
+        # State the outcome explicitly, and say plainly when there is none. A precedent with no recorded
+        # outcome is evidence, not a precedent that went well: the model was reading outcome=None as
+        # "clean" and describing it that way, which the record does not support.
+        if p.get("is_mirror"):
+            outcome = "went FINE (near-identical mirror of a decision that broke)"
+        elif p["outcome"]:
+            outcome = f"outcome={p['outcome']}"
+        else:
+            outcome = "OUTCOME NOT RECORDED (do not describe this as clean or as a failure)"
+        trust = "" if p.get("attribution_ok", True) else (
+            " [WARNING: this record's id could not be verified against the corpus; "
+            "use its content but do not cite the id as a precedent]")
         lines.append(
-            f"- launch {p['launch_id']} ({p['date']}, {p['service']}, {p['change_class']}, "
-            f"outcome={p['outcome']}, proof={p['proof_count']}, trend={p['trend']}"
-            f"{', near-identical clean mirror' if p.get('is_mirror') else ''}):\n{body}"
+            f"- {p['launch_id']} ({p['date']}, {p['service']} / {p['change_class']}, "
+            f"{outcome}, evidence={p['proof_count']}, trend={p['trend']}{trust}):\n{body}"
         )
     return "\n".join(lines)
 
@@ -161,6 +172,8 @@ async def assess(pending: Pending, *, memory: bool = True,
             "cited_fix": parsed.get("cited_fix"),
         }
     result["facts_used"] = sorted({p["launch_id"] for p in result["precedents"] if p["launch_id"]})
+    result["engine"]["attribution_unverified"] = [
+        p["launch_id"] for p in result["precedents"] if not p.get("attribution_ok", True)]
     if result["flip"] and result["flip"].get("precedent_launch_id"):
         cited = result["flip"]["precedent_launch_id"]
         if cited not in result["facts_used"]:

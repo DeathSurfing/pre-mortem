@@ -242,7 +242,64 @@ def rank(memories: list[dict[str, Any]], *, now: datetime | None = None,
         return (broke, -r["score"]["total"], r["launch_id"] or "")
 
     deduped.sort(key=sort_key)
+    # verify every attribution, and demote the ones that fail so they cannot be cited as a precedent
+    for r in deduped:
+        ok, why = verify_attribution(r)
+        r["attribution_ok"] = ok
+        if not ok:
+            r["attribution_note"] = why
+            # prefer the same id from a raw fact if one exists in this result set
+            raw = next((x for x in out if x["launch_id"] == r["launch_id"] and x.get("memory_type") == "world"), None)
+            if raw is not None:
+                r.update({"text": raw.get("text"), "memory_type": "world",
+                          "source_chunk": raw.get("source_chunk"), "attribution_ok": True,
+                          "attribution_note": f"{why}; replaced with the raw record"})
+    deduped.sort(key=lambda r: (0 if r.get("attribution_ok") else 1, *sort_key(r)))
     return deduped
+
+
+_TRUTH_CACHE: dict[str, dict[str, str]] = {}
+
+
+def ground_truth_index() -> dict[str, dict[str, str]]:
+    """id -> {service, change_class, outcome} from the corpus tables, deploy + business.
+
+    Consolidated observations can attribute a change to the wrong id (docs/MODELS.md 9.11). Raw facts
+    carry exact metadata, so the corpus is the authority on what an id actually was.
+    """
+    if _TRUTH_CACHE:
+        return _TRUTH_CACHE
+    try:
+        from .bizcorpus import ground_truth as biz_gt
+        from .corpus import ground_truth as dep_gt
+        for row in dep_gt()["launches"]:
+            _TRUTH_CACHE[row["launch_id"]] = {
+                "service": row["service"], "change_class": row["change_class"],
+                "outcome": row["outcome"], "is_mirror": str(row["is_mirror"]),
+            }
+        for row in biz_gt()["decisions"]:
+            _TRUTH_CACHE[row["decision_id"]] = {
+                "service": row["domain"], "change_class": row["decision_type"],
+                "outcome": row["outcome"], "is_mirror": str(row["is_mirror"]),
+            }
+    except Exception:  # noqa: BLE001
+        pass
+    return _TRUTH_CACHE
+
+
+def verify_attribution(p: dict[str, Any]) -> tuple[bool, str]:
+    """Is this precedent's id a truthful citation? Returns (ok, reason)."""
+    truth = ground_truth_index().get(p.get("launch_id") or "")
+    if not truth:
+        # an id not in either corpus: it came from the model or a bad extraction, not from our data
+        return False, "id is not in the corpus"
+    if p.get("memory_type") == "observation":
+        # observations have empty metadata, so their service/class were parsed from prose. Check them.
+        if p.get("service") and truth["service"] != p["service"]:
+            return False, f"observation attributed {truth['service']} work to {p['launch_id']}"
+        if p.get("change_class") and truth["change_class"] != p["change_class"]:
+            return False, f"observation attributed a {truth['change_class']} change to {p['launch_id']}"
+    return True, ""
 
 
 def verdict(precedents: list[dict[str, Any]], *, service: str | None, change_class: str | None) -> dict[str, Any]:

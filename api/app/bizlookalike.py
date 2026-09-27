@@ -236,6 +236,8 @@ async def redflag(text: str, *, memory: bool = True, promoted: set[str] | None =
             "open_questions": parsed.get("open_questions") or [],
         }
     out["facts_used"] = sorted({p["launch_id"] for p in out["precedents"] if p["launch_id"]})
+    out["engine"]["attribution_unverified"] = [
+        p["launch_id"] for p in out["precedents"] if not p.get("attribution_ok", True)]
     prose = " ".join(str(v) for v in [
         (out.get("opinion") or {}).get("headline"),
         (out.get("opinion") or {}).get("why"),
