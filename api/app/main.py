@@ -51,7 +51,10 @@ async def health() -> dict[str, Any]:
     return {
         "ok": True,
         "problems": s.problems(),
-        "bank_id": s.bank_id,
+        # The business bank is the one the product reads, so it is named first. bank_id is the older deploy
+        # bank, kept only so an existing reader does not silently get a different value.
+        "bank_id": s.biz_bank_id,
+        "banks": {"business": s.biz_bank_id, "legacy_deploy": s.bank_id},
         "models": {"llm": s.llm_model, "fallback": s.llm_fallback_model, "min_proof": s.min_proof},
         "laya": laya_client.status(),
     }
@@ -64,7 +67,8 @@ async def health_deep() -> dict[str, Any]:
     out: dict[str, Any] = {
         "ok": True,
         "problems": s.problems(),
-        "bank_id": s.bank_id,
+        "bank_id": s.biz_bank_id,
+        "banks": {"business": s.biz_bank_id, "legacy_deploy": s.bank_id},
         "hindsight_url": s.hindsight_url,
         "models": {"llm": s.llm_model, "fallback": s.llm_fallback_model, "min_proof": s.min_proof},
     }
@@ -82,7 +86,9 @@ async def health_deep() -> dict[str, Any]:
             "directives_total": len(await hindsight.list_directives()),
             "corpus_expected": len(corpus()),
         }
-        out["documents"] = await hindsight.list_documents(limit=100)
+        # The business bank, not the default: reporting the legacy bank's count made /health/deep disagree
+        # with /api/biz/bank (42 vs 77) and read as a broken memory store.
+        out["documents"] = await hindsight.list_documents(limit=200, bank_id=s.biz_bank_id)
     except Exception as e:  # noqa: BLE001
         out["ok"] = False
         out["error"] = f"{type(e).__name__}: {e}"[:400]
