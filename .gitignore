@@ -1,0 +1,19 @@
+# env
+.env
+*.env
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# data caches (regenerate from seed.py)
+data/*.csv
+data/*.json
+
+# streamlit
+.streamlit/secrets.toml
+
+# os
+.DS_Store
