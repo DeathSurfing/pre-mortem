@@ -172,9 +172,21 @@ export default function Page() {
     // The first question opens a new thread and gets the full dossier. Everything after it is a follow-up:
     // same memory, same citations, but no repeated evidence apparatus.
     const isFollowUp = turnsRef.current.length > 0;
+    // A follow-up is answered as chat, which emits no precedent events, but it cites decisions from the
+    // review it is following up on. Carry those forward so the pills still resolve.
+    const carried = [...turnsRef.current].reverse().find((x) => (x.precedents ?? []).length > 0);
     setTurns((prev) => [
       ...prev,
-      { id, question, status: "connecting", streamed: "", busy: true, followUp: isFollowUp },
+      {
+        id,
+        question,
+        status: "connecting",
+        streamed: "",
+        busy: true,
+        followUp: isFollowUp,
+        precedents: isFollowUp ? carried?.precedents : undefined,
+        cited: isFollowUp ? carried?.cited : undefined,
+      },
     ]);
 
     // Prior turns become the conversation passed to the backend. The assistant side uses the answer text
@@ -390,8 +402,16 @@ export default function Page() {
               <div className="mt-5 max-w-[68ch]">
                 <Thinking text={t.thinking ?? ""} busy={t.busy} />
                 <p className="prose-editorial mt-2 text-[15px] leading-relaxed text-ink-soft">
-                  {t.streamed ? t.streamed : t.busy ? null : "(no reply)"}
-                  {t.busy && <span className="caret" />}
+                  {t.streamed || t.busy ? (
+                    <>
+                      {/* Through AnnotatedProse, not raw: id mentions in a follow-up must render as the same
+                          pills, or a citation in the prose looks like plain text. */}
+                      <AnnotatedProse text={t.streamed} precedents={t.precedents ?? []} />
+                      {t.busy && <span className="caret" />}
+                    </>
+                  ) : (
+                    "(no reply)"
+                  )}
                 </p>
               </div>
             ) : t.noPrecedent ? (
@@ -406,16 +426,6 @@ export default function Page() {
                   </div>
                 )}
               </>
-            ) : t.followUp ? (
-              <div className="mt-6 max-w-[68ch]">
-                <p className="prose-editorial text-[15px] leading-relaxed text-ink-soft">
-                  <AnnotatedProse
-                    text={t.opinion?.headline ? `${t.opinion.headline}\n\n${t.opinion.why ?? ""}` : t.streamed}
-                    precedents={t.precedents ?? []}
-                  />
-                  {t.busy && <span className="caret" />}
-                </p>
-              </div>
             ) : (
               (t.opinion?.headline || t.streamed) && (
                 <div className="mt-6 grid gap-x-12 gap-y-8 lg:grid-cols-[minmax(0,1fr)_360px]">
