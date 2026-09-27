@@ -16,12 +16,37 @@ LEDGER_BOOST = 3.0
 # launch id and service have to be recovered from their text, which states them verbatim
 # ("Launch L-2026-0034 for payments-service on 2026-04-21 involved ...").
 _LAUNCH_RE = re.compile(r"\bL-\d{4}-\d{4}\b")
+_DECISION_RE = re.compile(r"\bD-\d{4}-\d{4}\b")
+# business domains, recovered from text when a consolidated observation lost its metadata
+_BIZ_DOMAINS = ("pricing", "hiring", "vendor", "marketing", "launch", "buildvsbuy",
+                "expansion", "operations", "finance", "legal")
 _SERVICE_RE = re.compile(r"\bfor ([a-z][a-z0-9-]{2,40}?(?:-service|-api|-worker|-index|-pipeline))\b")
 _CLASSES = ("config-only", "dependency-bump", "schema-migration", "flag-flip", "infra-change")
 
 # Consolidated observations describe the change in prose ("a configuration change", "a library upgrade"),
 # not with our internal class slug, so a synonym map is required or every observation is dropped by the
 # strict service+class filter. Order matters: the most specific phrase wins.
+# business decision-type phrases -> corpus slug, for observations that lost their metadata
+_BIZ_TYPE_SYNONYMS: tuple[tuple[str, str], ...] = (
+    ("renewal discount", "discount"),
+    ("discount", "discount"),
+    ("price increase", "price-increase"),
+    ("packaging", "packaging"),
+    ("senior platform engineer", "senior-hire"),
+    ("senior hire", "senior-hire"),
+    ("backfill", "backfill"),
+    ("contractor", "contractor-conversion"),
+    ("vendor switch", "vendor-switch"),
+    ("vendor renewal", "renewal"),
+    ("budget shift", "budget-shift"),
+    ("channel test", "channel-test"),
+    ("feature launch", "feature-ga"),
+    ("general availability", "feature-ga"),
+    ("build in house", "build"),
+    ("licence", "buy"),
+    ("new office", "new-office"),
+)
+
 _CLASS_SYNONYMS: tuple[tuple[str, str], ...] = (
     ("configuration-only", "config-only"),
     ("configuration change", "config-only"),
@@ -41,28 +66,57 @@ _CLASS_SYNONYMS: tuple[tuple[str, str], ...] = (
 
 
 def recover_attrs(mem: dict) -> dict:
-    """Best-effort attributes for a memory, from metadata when present, else parsed from its text."""
+    """Best-effort attributes for a memory, from metadata when present, else parsed from its text.
+
+    Two corpora feed this ranker with different vocabularies, so both are normalised here to one shape:
+        deploy corpus:   launch_id / service      / change_class
+        business corpus: decision_id / domain     / decision_type
+    Normalised keys are always `launch_id` (the citable id), `service` and `change_class`, so `rank()`
+    and `verdict()` stay corpus-agnostic.
+    """
     meta = dict(mem.get("metadata") or {})
     text = mem.get("text") or ""
+    # business corpus -> deploy vocabulary
+    if not meta.get("launch_id") and meta.get("decision_id"):
+        meta["launch_id"] = meta["decision_id"]
+    if not meta.get("service") and meta.get("domain"):
+        meta["service"] = meta["domain"]
+    if not meta.get("change_class") and meta.get("decision_type"):
+        meta["change_class"] = meta["decision_type"]
     if not meta.get("launch_id"):
         hit = _LAUNCH_RE.search(text)
+        if hit:
+            meta["launch_id"] = hit.group(0)
+    if not meta.get("launch_id"):
+        hit = _DECISION_RE.search(text)
         if hit:
             meta["launch_id"] = hit.group(0)
     if not meta.get("service"):
         hit = _SERVICE_RE.search(text)
         if hit:
             meta["service"] = hit.group(1)
+        else:
+            low = text.lower()
+            for d in _BIZ_DOMAINS:
+                if f" {d} " in f" {low} " or f"{d} decision" in low or f"{d} " in low[:80]:
+                    meta["service"] = d
+                    break
     if not meta.get("change_class"):
         low = text.lower()
-        for c in _CLASSES:
-            if c in low:
-                meta["change_class"] = c
+        for phrase, slug in _BIZ_TYPE_SYNONYMS:
+            if phrase in low:
+                meta["change_class"] = slug
                 break
         else:
-            for phrase, slug in _CLASS_SYNONYMS:
-                if phrase in low:
-                    meta["change_class"] = slug
+            for c in _CLASSES:
+                if c in low:
+                    meta["change_class"] = c
                     break
+            else:
+                for phrase, slug in _CLASS_SYNONYMS:
+                    if phrase in low:
+                        meta["change_class"] = slug
+                        break
     return meta
 
 

@@ -92,8 +92,8 @@ async def list_directives(bank_id: str | None = None) -> list[dict[str, Any]]:
         return []
 
 
-async def agent_stats() -> dict[str, Any]:
-    s = await client().banks.get_agent_stats(settings().bank_id)
+async def agent_stats(bank_id: str | None = None) -> dict[str, Any]:
+    s = await client().banks.get_agent_stats(bank_id or settings().bank_id)
     return s if isinstance(s, dict) else s.to_dict()
 
 
@@ -156,20 +156,20 @@ async def seed(launches, bank_id: str | None = None, context: str = "post-deploy
     return {"retained": len(items), "raw": txt[:200], "tokens": tokens}
 
 
-async def list_documents(limit: int = 100) -> list[dict[str, Any]]:
+async def list_documents(limit: int = 100, bank_id: str | None = None) -> list[dict[str, Any]]:
     try:
-        r = await client().documents.list_documents(settings().bank_id, limit=limit)
+        r = await client().documents.list_documents(bank_id or settings().bank_id, limit=limit)
         items = getattr(r, "items", None) or []
         return [{"id": getattr(d, "id", None), "created_at": str(getattr(d, "created_at", ""))} for d in items]
     except Exception as e:  # noqa: BLE001
         return [{"error": f"{type(e).__name__}: {e}"}]
 
 
-async def delete_documents(doc_ids: list[str]) -> int:
+async def delete_documents(doc_ids: list[str], bank_id: str | None = None) -> int:
     n = 0
     for d in doc_ids:
         try:
-            await client().documents.delete_document(settings().bank_id, d)
+            await client().documents.delete_document(bank_id or settings().bank_id, d)
             n += 1
         except Exception as e:  # noqa: BLE001
             log.warning("delete %s failed: %s", d, e)

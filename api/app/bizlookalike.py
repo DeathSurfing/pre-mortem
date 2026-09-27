@@ -71,12 +71,15 @@ OPINION_SCHEMA = {
 OPINION_SYSTEM = (
     "You are a business decision reviewer inside a company. You are given a decision the user is "
     "considering and the company's OWN recalled past decisions in the same domain.\n"
-    "Rules:\n"
-    "- Base everything on the recalled decisions. Never invent a precedent, a number, or a result.\n"
-    "- Cite past decisions by their id (for example D-2025-0002) when you refer to them.\n"
-    "- Be direct and specific. This is a colleague flagging a real risk, not a consultant.\n"
-    "- If the recalled decisions do not cover this situation, say so plainly instead of stretching.\n"
-    "- Never claim to know something the recalled records do not state.\n"
+    "Rules, in order of importance:\n"
+    "1. EVERY claim must cite the decision id it comes from, inline, in the sentence. Write it like "
+    "'we lost 6.2 points of margin when we did this in D-2025-0002'. A sentence with no id is a sentence "
+    "you must not write.\n"
+    "2. Base everything on the recalled decisions. Never invent a precedent, a number, or a result.\n"
+    "3. Quote the actual figure or phrase from the record where it matters, not a paraphrase of it.\n"
+    "4. Be direct and specific. This is a colleague flagging a real risk, not a consultant.\n"
+    "5. If the recalled decisions do not cover this situation, say so plainly instead of stretching.\n"
+    "6. Never claim to know something the recalled records do not state.\n"
     "Return JSON."
 )
 
@@ -161,7 +164,7 @@ async def redflag(text: str, *, memory: bool = True, promoted: set[str] | None =
     if memory:
         q = " ".join([attrs.get("intent") or "", attrs.get("rationale") or "",
                       " ".join(attrs.get("keywords") or []), text])[:1200]
-        recalled = await hindsight.recall(q, budget="mid", max_tokens=1800)
+        recalled = await hindsight.recall(q, budget="mid", max_tokens=1800, bank_id=s.biz_bank_id)
 
     ranked = rank(recalled, now=now, promoted=promoted, service=domain, change_class=dtype,
                   min_proof=s.min_proof)
@@ -233,10 +236,19 @@ async def redflag(text: str, *, memory: bool = True, promoted: set[str] | None =
             "open_questions": parsed.get("open_questions") or [],
         }
     out["facts_used"] = sorted({p["launch_id"] for p in out["precedents"] if p["launch_id"]})
-    cited = (out.get("opinion") or {}).get("headline", "") + " " + (out.get("opinion") or {}).get("why", "")
-    out["engine"]["citations_in_prose"] = sorted({f for f in out["facts_used"] if f and f in cited})
-    if out["facts_used"] and not out["engine"]["citations_in_prose"]:
-        out["engine"]["citation_warning"] = "the prose cited none of the recalled decision ids"
+    prose = " ".join(str(v) for v in [
+        (out.get("opinion") or {}).get("headline"),
+        (out.get("opinion") or {}).get("why"),
+        (out.get("opinion") or {}).get("differentiating_detail"),
+        (out.get("opinion") or {}).get("suggested_guardrail"),
+    ] if v)
+    cited = sorted({f for f in out["facts_used"] if f and f in prose})
+    out["engine"]["citations_in_prose"] = cited
+    out["engine"]["uncited_facts"] = sorted(set(out["facts_used"]) - set(cited))
+    if out["facts_used"] and not cited:
+        out["engine"]["citation_warning"] = (
+            "the prose cited none of the recalled decision ids; treat the card list as the source, not the summary"
+        )
     return out
 
 
