@@ -25,3 +25,11 @@ next-env.d.ts
 api/.venv/
 api/__pycache__/
 .pytest_cache/
+
+# api venv (uv-created)
+.venv-api/
+venv-api/
+
+# probe scratch output
+probe_*.txt
+web/tsconfig.tsbuildinfo

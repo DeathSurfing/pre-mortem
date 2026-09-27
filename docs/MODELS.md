@@ -226,3 +226,114 @@ Never commit either key; `.env` is gitignored and `.env.example` is tracked.
 - OpenCode Go: one subscription, model list is generous. Prefer `deepseek-v4-flash` for the 40-launch seed
   (40 extraction calls) and reserve a stronger model for the flip-detail call if quality needs it.
 - Seed once and keep the Hindsight volume. Re-seeding is 40 extraction calls plus consolidation, not free.
+
+## 9. VERIFIED corrections from live probing (API 0.10.1, Hindsight Cloud)
+
+These were measured against the real API on 2026-09-27 and **invalidate parts of the original plan**.
+Recorded here so the code never repeats them.
+
+### 9.1 `query_timestamp` does NOT filter results — the no-lookahead claim was WRONG
+
+| Query | Results |
+|---|---|
+| `recall(query="pool change", query_timestamp=None)` | 7 results, `occurred_start` in {2025-11-01, 2026-03-14} |
+| `recall(..., query_timestamp="2026-03-13")` (day before the fact) | **7 results, same set** |
+| `recall(..., query_timestamp="2024-01-01")` (before everything) | **7 results, same set** |
+
+It is a ranking/temporal-reasoning hint, not a filter. `tags` and `min_scores` also do not hard-filter
+(recall with `tags=["pattern:P1"]` on untagged memories returned everything). `tag_groups` behaves the same.
+
+**Consequence:** if the whole corpus is ingested at once, the agent can retrieve facts from launches that
+had not happened yet at the point being evaluated. Any claim of "lookahead bias is structurally impossible"
+would have been false.
+
+**Replacement mechanisms, both honest:**
+1. **Staged ingestion** (the demo does this): seed only up to day N, ask, then ingest more and ask again.
+   The agent literally cannot know what is not yet in the bank. This is server-enforced truth, not a hint.
+2. **Offline replay with Python-side ordering**: for each launch i, take the recall result set and keep only
+   memories whose `occurred_start` precedes launch i's timestamp. Deterministic, free, verifiable, and stated
+   in the README as our own evaluation logic rather than a server guarantee.
+
+### 9.2 `test_bank_llm` is unavailable on Cloud
+
+`banks.test_bank_llm` returns 404, and `get_version().features.bank_llm_health` is `False`. Guard it:
+call it only if the feature flag is true, otherwise substitute a 1-token `reflect` as the health check.
+
+### 9.3 `create_or_update_bank` works, but the client wrapper is async
+
+Verified: `banks.create_or_update_bank` and `banks.get_bank_config` are **async** on the `banks` namespace
+(`inspect.iscoroutinefunction` -> True), while `retain` / `recall` / `reflect` are sync wrappers over async.
+
+**Trap that cost a probe run:** the client's internal `_run_async` calls `asyncio.get_event_loop()`, so
+calling `asyncio.run()` per call closes the loop the client later depends on. Every subsequent call then
+fails with `RuntimeError: Event loop is closed`. Fix: create ONE event loop, `asyncio.set_event_loop(loop)`
+at import, and use `loop.run_until_complete(...)` for the async namespace methods. Under FastAPI, call the
+async methods with `await` inside the request handler instead; never wrap them in `asyncio.run`.
+
+### 9.4 Config that landed correctly
+
+`get_bank_config` returns `{bank_id, config, overrides}`. Confirmed values after `create_or_update_bank`:
+`disposition_skepticism=4`, `disposition_literalism=5`, `disposition_empathy=2`, `enable_observations=True`,
+`enable_graph_retrieval=True`, `enable_temporal_retrieval=True`, `enable_reranking=True`,
+`retain_custom_instructions` preserved, `consolidation_llm_batch_size=8`.
+
+Note `retain_extraction_mode: concise` is the default. For this project set it to a fuller mode if
+extraction turns out to drop the fix text; the probe's extraction was good enough as-is.
+
+### 9.5 Extracted facts, measured
+
+One retain of a single launch document produced **4 `world` facts** with `metadata` preserved verbatim
+(`launch_id`, `service`, `change_class`, `pattern_id`, `outcome`) and date-aware `occurred_start` per fact,
+including a correct 2025-11-01 date for a *referenced* prior launch. Consolidation was pending
+(`pending_consolidation: 4`) until forced.
+
+### 9.6 Cost per operation (credit discipline)
+
+One retain of a ~1 KB launch doc: **`input_tokens=2253, output_tokens=903, total_tokens=3156`**.
+
+Consequences for a $55 budget:
+- **`recall` uses no LLM** (retrieval only) -> effectively free. Make it the default path.
+- **`retain` and `reflect` cost LLM tokens.** Seed is ~40 x 3.2k = ~126k tokens, plus consolidation.
+- **`reflect` is the expensive call** (agentic loop, up to 10 iterations). Budget 1-2 showcase calls only.
+- **Design decision:** the replay and all three demo presets use `recall` (free) + our own OpenCode Go model
+  (flat subscription) for the flip-detail sentence. `reflect` is demonstrated once, on camera, as the
+  "Hindsight answered it itself" beat. This is both cheaper and more auditable, since the metric then does
+  not depend on an LLM at all.
+
+### 9.7 Bank hygiene
+
+`documents.list_documents(bank_id)` and `documents.delete_document(bank_id, doc_id)` exist, so a re-seed can
+clean up properly rather than leaving stale documents. `directives.list_directives(bank_id)` returns
+`{items, total, limit, offset}` and worked (empty list). `memories` and `tags` are **not** client namespaces
+on this version; use `list_memories`, `entities`, `documents`, `mental_models`, `operations`.
+
+### 9.8 Run results (measured, API 0.10.1, live bank)
+
+| Item | Measured |
+|---|---|
+| Seed | 40 launches retained in one batch; **157 nodes**, 42 documents |
+| Fact extraction rate | ~2.6 `world` facts per launch document |
+| Observations after consolidation | **43** (needs wall-clock time: 178s in the run that passed) |
+| Directives created | 5, via `acreate_directive` (separate resource, not a bank field) |
+| Disposition on the bank | skepticism 4, literalism 5, empathy 2 (confirmed via `get_bank_config`) |
+| Replay coverage | found 7/12 materialised, derivable 7/12, **gap 0** |
+| `reflect` through Cloud | works, returns a cited answer |
+| Test suite | **34/34 checks pass** (`api/tests/test_e2e.py --seed --reflect`) |
+
+**Two operational facts worth remembering:**
+1. **Observations are a background job.** Immediately after retain, `total_observations` is 0 with
+   `pending_consolidation` non-zero. `recover_consolidation()` nudges it, then it still needs minutes.
+   `hindsight.wait_for_observations()` polls free `agent_stats` calls until they appear (178s observed).
+   Never seed right before recording without waiting.
+2. **Hindsight extracts several facts per document.** One launch produced ~2.6 facts, so recall returns
+   the same `launch_id` repeatedly. `rank()` must dedupe by `launch_id` or the precedent list shows the
+   same launch three times.
+
+### 9.9 Corpus design rule learned from the first failed run
+
+A "pattern break" must actually materialise, or the pattern is noise the agent cannot learn. In the first
+corpus, 3 of 6 P1 breaks came out `clean` because outcome was chosen by `idx % 4`, so the agent was
+penalised for a pattern the data did not contain. Fix: per-pattern outcome sequences (`_BREAK_PLAN` in
+`corpus.py`), with most breaks materially breaking and exactly two staying clean so precision is a real
+question rather than a guaranteed 100%. Plain (non-pattern) launches are now always clean, so every
+materialised outcome traces to a pattern.

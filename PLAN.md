@@ -49,13 +49,16 @@ no ignored-flag history, no honest replay. Load-bearing surface:
 | The confidence number shown in the UI | observation proof count, zero hand-tuning |
 | "This failure mode is getting worse" badge | freshness trend `strengthening` / `weakening` / `stale` |
 | Precedent cards with exact source text | `recall(include_chunks=True)` |
-| Honest replay (launch N cannot see launch N+1) | `recall(query_timestamp=...)` |
+| Honest replay (launch N cannot see launch N+1) | our own `occurred_start` filter + staged ingestion. **`query_timestamp` does not filter — measured, see `MODELS.md` 9.1** |
 | Refusing to assert an uncited cause | `directives` — "never assert a precedent without a cited launch ID", "never state a cause you cannot link to a retained fix" |
 | Refusing rather than guessing | `disposition` skepticism 4 / literalism 5 / empathy 2 |
 | Instant, identical canned demo answers | `mental_models` |
 
-`query_timestamp` is the load-bearing detail for credibility: the pre-mortem for launch N structurally
-cannot see later launches. Lookahead is impossible, not promised.
+**Corrected:** `query_timestamp` does not filter (measured against API 0.10.1 — same result set for any
+timestamp, including one before the data existed). Lookahead is therefore prevented by (a) staged ingestion
+in the live demo, so unevaluated launches are not in the bank at all, and (b) a Python-side `occurred_start`
+filter in `replay()`. Both are verifiable; the README states this as our evaluation logic, not a server
+guarantee. Being precise here is worth more than the original claim was.
 
 ### Technical implementation (20%) — small, clean, honest
 
@@ -147,7 +150,7 @@ second use case would cost the build day.
 |---|---|
 | 0:00-0:50 | Hindsight container up on **OpenCode Go** (`docs/MODELS.md`), `api/scripts/smoke.py` green: health, `test_bank_llm`, retain -> recall -> reflect with `response_schema`. **Gate: do not write app code until this passes** |
 | 0:50-1:50 | `api/`: corpus + `seed.py` — 40 interlocked launches, retain with metadata, `recover_consolidation`, `ground_truth.json`. **Biggest block, protect it** |
-| 1:50-2:35 | `api/`: `lookalike.py` — recall with `query_timestamp`, deterministic `rank`, flip-detail via 9Router JSON mode, `no_precedent` path. Freeze the `Assessment` contract |
+| 1:50-2:35 | `api/`: `lookalike.py` — recall (free, no LLM) + Python-side `occurred_start` filter, deterministic `rank`, flip-detail via OpenCode Go JSON mode, `no_precedent` path. Freeze the `Assessment` contract |
 | 2:35-3:00 | `api/`: `ledger.py` + `replay.py` — flags and promotion, epoch replay cached to `replay.json`, `/api/metrics` |
 | 3:00-4:20 | `web/`: one screen — change panel, memory toggle, risk banner, precedent cards with citations, **flip detail as the hero**, declined list, ledger, metrics charts, prompt preview |
 | 4:20-4:40 | Bank `mission` / `directives` / `disposition`, 2 `mental_models`, three presets end to end, freeze numbers, raw screen capture |
@@ -167,10 +170,10 @@ second use case would cost the build day.
 - 3 min video: use the five beats above. Record the flip-detail and `no_precedent` beats twice so there is
   a clean take. The 5-year-old explainer in the README is the 20-second cold open, verbatim.
 - Article: lead with the ignored-warning ledger and the flip-detail idea. Note the stack honestly: self-hosted Hindsight (FOSS) driving 9Router, local embeddings, FastAPI + Next.js. Include the Hindsight feature
-  table, the reproducibility note (print the seed's ground truth), and the `query_timestamp` honesty point.
+  table, the reproducibility note (print the seed's ground truth), and the measured honesty point about `query_timestamp` not filtering.
 - Social post per team member, plus a short video cut, per the content guide.
 - Submission: private repo made public at submission time, README with setup, a "How Hindsight is used"
-  section naming retain / recall with `query_timestamp` / reflect with `response_schema` / observations with
+  section naming retain / recall / reflect with `response_schema` / observations with
   proof counts and freshness trends / directives / disposition. Demo video link, live demo rehearsed twice,
   one paragraph on memory usage.
 

@@ -72,7 +72,7 @@ confidence number, no trend, no calibration, and no way to prove the replay is h
 | The confidence number in the UI | observation proof count, no hand-tuning |
 | "This failure mode is getting worse" badge | freshness trend: `strengthening` / `weakening` / `stale` |
 | Precedent cards with exact source | `recall(include_chunks=True)` |
-| Honest replay (a pre-mortem for launch N cannot see launch N+1) | `recall(query_timestamp=...)` |
+| Honest replay (a pre-mortem for launch N cannot see launch N+1) | staged ingestion + our own `occurred_start` filter. Measured: `query_timestamp` does **not** filter on API 0.10.1 |
 | Refusing to assert an uncited cause | `directives` ("never assert a precedent without a cited launch ID") |
 | Refusing instead of guessing | `disposition` skepticism 4 / literalism 5 / empathy 2 |
 | Instant, identical canned demo answers | `mental_models` |
@@ -103,7 +103,7 @@ thing on screen.
 |---|---|
 | 0:00-0:50 | Hindsight up on 9Router, `api/scripts/smoke.py` green: health, `test_bank_llm`, retain → recall → `reflect(response_schema)`. **Gate: no app code until this passes** |
 | 0:50-1:50 | `api/`: 40 interlocked launches, retain with metadata, force consolidation, `ground_truth.json` |
-| 1:50-2:35 | `api/`: recall with `query_timestamp`, deterministic rank, flip-detail via 9Router JSON mode, `no_precedent` path |
+| 1:50-2:35 | `api/`: recall (no LLM) + `occurred_start` filter, deterministic rank, flip-detail via OpenCode Go JSON mode, `no_precedent` path |
 | 2:35-3:00 | `api/`: ignored-warning ledger, epoch replay cached, `/api/metrics` |
 | 3:00-4:20 | `web/`: the one screen — change panel, memory toggle, risk banner, precedent cards with citations, **flip detail as the hero**, declined list, ledger, metrics |
 | 4:20-4:40 | Bank `mission` / `directives` / `disposition`, 2 `mental_models`, three presets end to end, freeze the numbers, raw screen capture |
@@ -154,19 +154,22 @@ Start with `docs/ARCHITECTURE.md` and `docs/DATA.md`; they fix every decision th
 ## Setup
 
 ```bash
-cp .env.example .env        # OPENCODE_GO_API_KEY, models, NEXT_PUBLIC_API_BASE_URL
-docker compose up --build   # hindsight :8888, api :8000, web :3000
+cp .env.example .env      # HINDSIGHT_API_KEY, OPENCODE_GO_API_KEY, NEXT_PUBLIC_API_BASE_URL
+docker compose up --build # api :8000, web :3000
 
-# first run only, on a clean volume
-curl -X POST localhost:8000/api/seed          # 40 launches + forced consolidation
-python api/scripts/smoke.py                   # health, bank LLM, retain -> recall -> reflect
+# first run only: build the corpus, then WAIT for observations (they are a background job)
+curl -X POST localhost:8000/api/seed
+python api/scripts/smoke.py --url http://localhost:8000 --llm
 ```
 
-Local dev without containers: `uvicorn app.main:app --reload` in `api/`, `npm run dev` in `web/`, and a
-Hindsight instance on `:8888` (exact `docker run` in `docs/MODELS.md`).
+Local dev without containers: `uvicorn app.main:app --reload` in `api/`, `npm run dev` in `web/`.
+Hindsight itself runs on Vectorize Cloud (`https://api.hindsight.vectorize.io`), so there is no memory
+container to run.
 
-No Groq key, no OpenAI key. The LLM is **OpenCode Go** (`deepseek-v4-flash` for Hindsight's extraction,
-`deepseek-v4.1-flash` for the app), with 9Router `gareebi` wired as a one-line fallback. Hindsight embeds
+
+No Groq key, no OpenAI key. Our LLM calls go to **OpenCode Go** (`deepseek-v4.1-flash`); Hindsight Cloud
+does its own extraction with its own configured model. `recall` costs no LLM at all, which is why the
+replay and the metrics are free and reproducible. Hindsight embeds
 locally (`BAAI/bge-small-en-v1.5`), so there is no external embedding provider either.
 
 Deployed on Dokploy: project `pre-mortem`, compose stack `hQJmXPzH4h31K6PNN9M5_`, built from this repo

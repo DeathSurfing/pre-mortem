@@ -59,7 +59,7 @@ api/
 | `POST` | `/api/seed` | idempotent: recreate bank, retain 40 launches, force consolidation, write ground truth |
 | `POST` | `/api/consolidate` | `recover_consolidation`; used right before recording |
 | `GET` | `/api/presets` | the 3 pending changes (A: P1 match, B: P3 match, C: no precedent) |
-| `POST` | `/api/assess` | `{preset_id or pending, memory: bool}` -> `Assessment` |
+| `POST` | `/api/assess` | `{preset_id or pending, memory: bool, engine: "recall"\|"reflect"}` -> `Assessment`. `recall` is the default (no LLM cost); `reflect` is the showcase path |
 | `GET` | `/api/ledger` | flags, ignored counts, promoted classes |
 | `POST` | `/api/ledger/flag` | record a flag as ignored/actioned (drives promotion) |
 | `POST` | `/api/replay` | run the epoch replay, cache to `data/replay.json` |

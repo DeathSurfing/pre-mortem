@@ -1,0 +1,12 @@
+# syntax
+.dockerignore
+node_modules
+.next
+.git
+.venv-api
+__pycache__
+*.pyc
+data/*.json
+probe_*.py
+extract_facts.py
+reduce.py
