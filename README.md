@@ -154,19 +154,31 @@ Start with `docs/ARCHITECTURE.md` and `docs/DATA.md`; they fix every decision th
 ## Setup
 
 ```bash
-cp .env.example .env        # NINEROUTER_URL, NINEROUTER_API_KEY, models
+cp .env.example .env        # OPENCODE_GO_API_KEY, models, NEXT_PUBLIC_API_BASE_URL
 docker compose up --build   # hindsight :8888, api :8000, web :3000
 
 # first run only, on a clean volume
 curl -X POST localhost:8000/api/seed          # 40 launches + forced consolidation
-python api/scripts/smoke.py                   # health, bank LLM, retain->recall->reflect
+python api/scripts/smoke.py                   # health, bank LLM, retain -> recall -> reflect
 ```
 
 Local dev without containers: `uvicorn app.main:app --reload` in `api/`, `npm run dev` in `web/`, and a
-Hindsight instance on `:8888` (see `docs/MODELS.md` for the exact `docker run` with 9Router wired in).
+Hindsight instance on `:8888` (exact `docker run` in `docs/MODELS.md`).
 
-No Groq key, no OpenAI key. The LLM is 9Router (`gareebi`, fallback `ocg/deepseek-v4.1-flash`); Hindsight
-embeds locally (`BAAI/bge-small-en-v1.5`), so there is no external embedding provider either.
+No Groq key, no OpenAI key. The LLM is **OpenCode Go** (`deepseek-v4-flash` for Hindsight's extraction,
+`deepseek-v4.1-flash` for the app), with 9Router `gareebi` wired as a one-line fallback. Hindsight embeds
+locally (`BAAI/bge-small-en-v1.5`), so there is no external embedding provider either.
+
+Deployed on Dokploy: project `pre-mortem`, compose stack `hQJmXPzH4h31K6PNN9M5_`, built from this repo
+through the `pre-mortem-Vikk` GitHub app. Push to `main` triggers a deploy.
+
+| URL | Service |
+|---|---|
+| https://premortem.lexcontra.com | `web` (the demo UI) |
+| https://premortem-api.lexcontra.com | `api` (FastAPI; `/health` is the readiness check) |
+
+DNS for both hostnames must exist before the first deploy, or the Let's Encrypt challenge fails. Full
+deploy sequence and the Dokploy traps are in `docs/MODELS.md`.
 
 ## Scope, stated plainly
 

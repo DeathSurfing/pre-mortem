@@ -145,13 +145,13 @@ second use case would cost the build day.
 
 | Time | Work |
 |---|---|
-| 0:00-0:50 | Hindsight container up on 9Router (`docs/MODELS.md`), `api/scripts/smoke.py` green: health, `test_bank_llm`, retain->recall->reflect with `response_schema`. **Gate: do not write app code until this passes** |
+| 0:00-0:50 | Hindsight container up on **OpenCode Go** (`docs/MODELS.md`), `api/scripts/smoke.py` green: health, `test_bank_llm`, retain -> recall -> reflect with `response_schema`. **Gate: do not write app code until this passes** |
 | 0:50-1:50 | `api/`: corpus + `seed.py` — 40 interlocked launches, retain with metadata, `recover_consolidation`, `ground_truth.json`. **Biggest block, protect it** |
 | 1:50-2:35 | `api/`: `lookalike.py` — recall with `query_timestamp`, deterministic `rank`, flip-detail via 9Router JSON mode, `no_precedent` path. Freeze the `Assessment` contract |
 | 2:35-3:00 | `api/`: `ledger.py` + `replay.py` — flags and promotion, epoch replay cached to `replay.json`, `/api/metrics` |
 | 3:00-4:20 | `web/`: one screen — change panel, memory toggle, risk banner, precedent cards with citations, **flip detail as the hero**, declined list, ledger, metrics charts, prompt preview |
 | 4:20-4:40 | Bank `mission` / `directives` / `disposition`, 2 `mental_models`, three presets end to end, freeze numbers, raw screen capture |
-| 4:40-5:00 | `/health` + `configProblems()`, docker-compose wiring, `.env.example`, README update |
+| 4:40-5:00 | `/health` + `configProblems()`, compose wiring, push to `main`, watch the Dokploy deploy go `done`, `curl /health` on the deployed URL, README update |
 
 **Cut list, in order if behind:**
 1. Metrics charts -> a static numbers row from `replay.json`. Do not build a charting layer for four numbers.
@@ -182,7 +182,7 @@ second use case would cost the build day.
 | Reads as another incident agent | Open with the pending change, not with incident history |
 | Numbers not reproducible | Print the seed's ground truth, let a judge spot-check one flag |
 | Observations not consolidated before recording | `recover_consolidation()` at seed time and a button in the UI; reflect re-verifies stale observations against raw facts anyway |
-| 9Router quirks | JSON mode works, `tool_choice: "auto"` does **not**; never rely on auto tool calling. `kimchi/*` and `openrouter/*` lanes are exhausted (402/403), so pin models |
+| Provider quirks | OpenCode Go chat **requires `x-opencode-session`** (fails with `MissingSessionID` without it). On the 9Router fallback, JSON mode works but `tool_choice: "auto"` does **not**; `kimchi/*` 402 and `openrouter/*` 403, so pin models |
 | Hindsight reflect latency (agentic loop, up to 10 iterations) | `budget="low"`, small `max_tokens`, `mental_models` for the canned demo questions, precomputed replay, `HINDSIGHT_API_LLM_TIMEOUT=180` |
 | Scope creep | One workflow, one persona, one metric. Cut the second use case without negotiating |
 
@@ -190,11 +190,13 @@ second use case would cost the build day.
 
 | Decision | Choice | Reason |
 |---|---|---|
-| LLM for app + Hindsight | 9Router, `gareebi` (fallback `ocg/deepseek-v4.1-flash`) | already provisioned, one key, combo fallback |
-| Hindsight | FOSS self-host, not Cloud | Cloud's LLM provider is not configurable, so it cannot use 9Router. `docs/MODELS.md` |
-| Embeddings | Hindsight local (`BAAI/bge-small-en-v1.5`) | no external embedding key; 9Router's `openrouter/` embedding lane is dead |
+| LLM (primary) | **OpenCode Go**, `deepseek-v4-flash` for extraction, `deepseek-v4.1-flash` for our app | one OpenAI-compatible provider for both Hindsight and the app; Hindsight has a native `opencode-go` provider |
+| LLM (fallback) | 9Router `gareebi` | verified working today; one-line env swap in `docker-compose.yml` |
+| Hindsight | FOSS self-host, not Cloud | Cloud pins the extraction provider, so it cannot use OpenCode Go. `docs/MODELS.md` |
+| Embeddings | Hindsight local (`BAAI/bge-small-en-v1.5`) | OpenCode Go has no `/v1/embeddings`; local removes the last external dependency |
 | UI | Next.js App Router + Tailwind, split from the backend | UI is 15% of the score and is what judges watch |
 | Backend | FastAPI, owns all Hindsight access | one contract, testable without a browser, precomputed replay |
+| Deploy | Dokploy, project `pre-mortem`, compose stack from `DeathSurfing/pre-mortem` via the `pre-mortem-Vikk` GitHub app | deploy-path bugs pass CI green, so we verify the real deploy before recording |
 
 ## Stated scope
 

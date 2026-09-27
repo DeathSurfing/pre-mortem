@@ -4,16 +4,19 @@ Two days. Day 1 build, day 2 video + content. Tick in order, nothing out of sequ
 
 ## Before anything (50 min) — this block is a gate
 
-- [ ] `.env` from `.env.example`: `NINEROUTER_URL`, `NINEROUTER_API_KEY`, `LLM_MODEL=gareebi`,
-      `LLM_FALLBACK_MODEL=ocg/deepseek-v4.1-flash`, `HINDSIGHT_BANK_ID=premortem`
-- [ ] Hindsight container up with `HINDSIGHT_API_LLM_PROVIDER=openai`, base URL `$NINEROUTER_URL/v1`,
-      `HINDSIGHT_API_EMBEDDINGS_PROVIDER=local` (exact command in `docs/MODELS.md`)
+- [ ] `.env` from `.env.example`: `OPENCODE_GO_API_KEY` (Go subscription active), `OPENCODE_SESSION`,
+      `LLM_MODEL=deepseek-v4.1-flash`, `HINDSIGHT_LLM_MODEL=deepseek-v4-flash`, 9Router fallback vars
+- [ ] Hindsight container up with `HINDSIGHT_API_LLM_PROVIDER=opencode-go`,
+      `HINDSIGHT_API_EMBEDDINGS_PROVIDER=local` (exact service block in `docs/MODELS.md`)
+- [ ] One direct chat call to OpenCode Go with `x-opencode-session` returns a completion (proves the key has
+      Go access before blaming Hindsight)
 - [ ] `GET :8888/health` responds; Control Plane on `:9999` loads
 - [ ] `banks.test_bank_llm(bank_id)` passes
 - [ ] One retain -> recall round trip produces an `observation` with a proof count
 - [ ] `reflect` with `response_schema` returns structured output through 9Router
-- [ ] **If any of the above fails, stop.** Swap `HINDSIGHT_LLM_MODEL` to `ocg/deepseek-v4.1-flash` and
-      re-run. Do not start app code on a broken memory layer
+- [ ] **If any of the above fails, stop.** Fall back in order: (1) `HINDSIGHT_LLM_MODEL` to a stronger
+      OpenCode Go model, (2) whole system to 9Router `gareebi` via `HINDSIGHT_API_LLM_PROVIDER=openai` +
+      `_BASE_URL=$NINEROUTER_URL/v1`. Do not start app code on a broken memory layer
 
 ## Day 1 — build, 5h
 
@@ -35,6 +38,11 @@ Two days. Day 1 build, day 2 video + content. Tick in order, nothing out of sequ
 - [ ] `api/tests/`: preset A returns a precedent, preset C returns `no_precedent`, ledger promotion changes
       preset A's top card, ground-truth totals match the corpus
 - [ ] `web/` gate green: `tsc --noEmit`, lint, vitest, build (Playwright if a browser is installable)
+- [ ] Push to `main`; Dokploy stack (`pre-mortem` project, `pre-mortem-Vikk` GitHub app) deploys automatically
+- [ ] `compose.one | .createEnvFile` is `true`; env block written with a single newline-separated string
+- [ ] Deployment polls to `done` (a 200 from `compose.deploy` is not success), then `curl /health` on the
+      deployed API returns Hindsight reachable + `test_bank_llm` ok
+- [ ] Deployed `POST /api/seed`, then `POST /api/consolidate`, then `smoke.py --url https://<api-domain>`
 - [ ] **Freeze the real precision/coverage numbers** into `PLAN.md` and the README. Do not tune the write-up
       to match a target; tune `MIN_PROOF` or corpus density, then re-run
 

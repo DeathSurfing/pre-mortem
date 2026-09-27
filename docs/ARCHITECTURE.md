@@ -111,18 +111,22 @@ Gating: nothing below `MIN_PROOF` (default 1; raise to 2 once the corpus is fres
 precedent. If nothing clears the bar in the relevant `service + change_class`, return `no_precedent` with
 `coverage` and up to 2 `declined` entries carrying a reason.
 
-### LLM usage in the backend (9Router, verified behaviour)
+### LLM usage in the backend (OpenCode Go primary, 9Router fallback)
+
+Every chat call sends `x-opencode-session: $OPENCODE_SESSION` (a stable per-run string). OpenCode Go rejects
+chat without it (`MissingSessionID`), so this is a hard requirement, not an optimisation.
 
 | Call | Shape | Why |
 |---|---|---|
-| Flip-detail extraction | `payload = {"model","messages","response_format":{"type":"json_object"}}`, schema echoed in the prompt | 9Router honours JSON mode but **not** `tool_choice: "auto"` |
+| Flip-detail extraction | `{"model","messages","response_format":{"type":"json_object"}}`, schema echoed in the prompt | JSON mode is the portable path across both providers |
 | Memory-off baseline | same, no memories in prompt | the contrast beat |
-| Fallback | forced `tool_choice: {"type":"function",...}` | verified working, used if JSON mode misbehaves |
-| Retry | try -> repair -> `LLM_FALLBACK_MODEL` (`ocg/deepseek-v4.1-flash`) | combo models can pick a dead provider |
+| Repair | one retry with a forced `tool_choice: {"type":"function",...}` | works on 9Router; belt-and-braces on OpenCode Go |
+| Provider fallback | `LLM_FALLBACK_MODEL=gareebi` on 9Router, `NINEROUTER_*` env | keeps the demo alive if the primary lane misbehaves |
 
-Hindsight's own retain/reflect calls go to the same 9Router through `HINDSIGHT_API_LLM_*` (see `MODELS.md`).
-Hindsight uses forced tool calling internally for `reflect`, which is why the pre-build smoke test must
-exercise `reflect` with `response_schema` before any app code is written.
+Hindsight's own retain/reflect calls use the **native `opencode-go` provider** (`HINDSIGHT_API_LLM_PROVIDER`
++ `HINDSIGHT_API_LLM_MODEL`). `reflect` drives forced tool calling internally, which is why the pre-build
+smoke test must exercise `reflect` with `response_schema` before any app code is written: a provider that
+ignores forced tools breaks reflect while retain keeps working, which would fail late and confusingly.
 
 ## 4. Frontend — Next.js App Router
 
