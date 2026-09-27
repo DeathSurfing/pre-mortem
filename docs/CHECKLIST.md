@@ -40,7 +40,7 @@ total: `api` and `web`.
       recording
 - [ ] Bank is fully populated: **77 documents / 68 observations / 276 nodes / 6802 links / 0 pending /
       5 directives** in `/api/biz/bank`
-- [ ] `api/scripts/smoke.py` green against the deployed URL (39 checks on the business path)
+- [ ] `api/scripts/smoke.py` green against the deployed URL (42 checks on the business path)
 - [ ] **All five presets verified end to end** (A through E, all of them `decision` mode):
       A pricing/discount -> **high** (0.79, cites D-2025-0002, D-2025-0013 bad, D-2025-0023 mirror),
       B hiring/senior-hire -> **high**,

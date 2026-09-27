@@ -210,7 +210,7 @@ api/
     llm.py             chat_json / chat_text / chat_stream, retry ladder, reasoning lane
     replay.py          legacy epoch replay -> replay.json
   scripts/
-    smoke.py           39 checks against a live URL, business path, `--deep` adds more
+    smoke.py           42 checks against a live URL, business path, `--deep` adds more
     mode_check.py      routes 9 messages and asserts the mode contract for each
     conversation_check.py opening question reviewed, three follow-ups all chat
   tests/test_e2e.py    assert-based end-to-end against real Hindsight
@@ -309,7 +309,7 @@ host, so the UI is verified from built CSS, served HTML and the deployed bundle,
 |---|---|---|
 | Mode contract | `api/scripts/mode_check.py` | 9 messages, each asserted against its mode contract: `chat` has no verdict and no cites, `query` retrieves records and gives no verdict, `decision` has a verdict. Includes the action+history regression case. |
 | Follow-ups | `api/scripts/conversation_check.py` | the opening question is reviewed; three follow-ups are all `chat` with `follow_up=true` and no verdict re-issued |
-| Live smoke | `api/scripts/smoke.py` | 39 checks against any base URL, business path, including the SSE event sequence. `--deep` adds bank and ledger checks. |
+| Live smoke | `api/scripts/smoke.py` | 42 checks against any base URL, business path, including the SSE event sequence and the liveness/readiness split. `--deep` adds bank and ledger checks (49 total). |
 | API e2e | `api/tests/test_e2e.py` | assert-based, real Hindsight; default run makes no LLM calls |
 
 Run against any base URL: `python3 api/scripts/mode_check.py https://premortem-api.lexcontra.com`
