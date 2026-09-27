@@ -15,22 +15,35 @@ OpenCode Go is OpenAI-compatible at `https://opencode.ai/zen/go/v1`. Hindsight a
 | `GET /v1/models` | 35 models: `deepseek-v4-flash`, `deepseek-v4.1-flash`, `deepseek-v4-pro`, `glm-5.1/5.2/5.3`, `glm-5.3-flash`, `kimi-k2.6`, `kimi-k2.7-code`, `kimi-k3`, `minimax-m2.5/2.7/m3`, `qwen3.6-plus`, `qwen3.7-max/plus`, `qwen3.8-max`, `qwen3.8-flash`, `grok-4.6/4.7`, `gpt-5.6-luna`, `gpt-6-luna`, `mimo-*`, `longcat-*`, `space-bunny-free`, `omen-alpha`, `hy3`, `hy4-preview` |
 | `/v1/models` without the session header | works, returns the list |
 | `/v1/chat/completions` without the session header | **`MissingSessionID`: "Request is missing x-opencode-session and cannot be routed efficiently."** So the header is required on chat, not just advisory |
-| `/v1/chat/completions` with `x-opencode-session: <any string>` | routes, then returns **`An active OpenCode Go subscription is required to use Go models`** on the current key |
+| `/v1/chat/completions` **without** the session header | `MissingSessionID` — hard failure, not a warning |
+| `/v1/chat/completions` with `x-opencode-session` | **works.** `deepseek-v4-flash` returned `OK` |
+| Tool calling, `tool_choice: "auto"` | **WORKS** (`pick_fix` called with correct args). Better than 9Router, which silently ignores auto |
+| Tool calling, forced named function | works on `deepseek-v4-flash` and `deepseek-v4.1-flash` |
+| `response_format: {"type":"json_object"}` | works on both models, returns valid JSON |
+| Multi-turn tool loop (assistant `tool_calls` -> `role:"tool"` result -> continue) | works; the model re-issues `recall` rather than jumping to `done`, so loop depth must be capped |
+| Reasoning output | `deepseek-v4-flash` returns a `reasoning_content` field alongside `content`. Harmless, but strip it before parsing |
 | Hindsight native provider | `HINDSIGHT_API_LLM_PROVIDER=opencode-go`, default base URL `https://opencode.ai/zen/go/v1`, name the model via `HINDSIGHT_API_LLM_MODEL` |
 
-**Status: blocked on the new API key.** The current `OPENCODE_GO_API_KEY` in `/opt/data/.env` authenticates
-but has no Go subscription. Nothing about the design changes; the key swap is the only edit.
+**Status: VERIFIED WORKING.** The Go key is live and the Dokploy env block holds it. Measured behaviour on
+`deepseek-v4-flash`: chat, forced tools, **auto** tools, JSON mode, and multi-turn tool loops all work.
+This means Hindsight's `reflect` (which drives forced tool calling internally) is expected to work, and the
+app can use plain JSON mode without a forced-tool fallback.
+
+Remaining unverified item is Hindsight itself (the container could not be started here: Docker CLI present,
+no daemon). One `reflect` with `response_schema` via `api/scripts/smoke.py` on Dokploy closes it.
 
 ### Non-negotiable rules for this provider
 
-1. **Always send `x-opencode-session` on chat calls.** Pick one stable string per conversation run (a UUID or
-   the operation id) and reuse it, because the header exists for routing efficiency. Without it the call
-   fails outright, it does not silently degrade.
+1. **Always send `x-opencode-session` on chat calls.** One stable string per run (`pre-mortem-prod`), reused.
+   Without it the call fails outright, it does not silently degrade. For Hindsight's own calls this is set via
+   `HINDSIGHT_API_LLM_EXTRA_HEADERS={"x-opencode-session": "pre-mortem-prod"}` in case the native
+   `opencode-go` provider does not send it itself.
 2. **`gpt-6-luna`, `gpt-5.6-luna`, `qwen3.8-max` are the likely choices for extraction quality.** Start with
    `deepseek-v4-flash` (cheap, fast, likely enough for fact extraction), move up only if extraction is noisy.
    Hindsight makes one extraction call per retain, so 40 launches = 40 calls.
-3. **Set `HINDSIGHT_API_LLM_EXTRA_HEADERS`** if the native `opencode-go` provider does not already send the
-   session header. It exists in Hindsight's config; verify before assuming.
+3. **`HINDSIGHT_API_LLM_EXTRA_HEADERS` is set in the Dokploy env** to belt-and-braces the session header.
+   If Hindsight's `opencode-go` provider already sends one, a duplicate header is the only risk; if the request
+   then fails, drop this var. Test both ways in the smoke script.
 4. **Embeddings stay local** (`BAAI/bge-small-en-v1.5`). OpenCode Go exposes no `/v1/embeddings` route, and
    local embeddings remove the last external dependency.
 5. Keep `HINDSIGHT_API_LLM_TIMEOUT=180`; combo/reasoning models are slower than a small chat model.
@@ -100,7 +113,7 @@ Stack already created and configured. Verified state:
 | `createEnvFile` | `true` (required: our compose interpolates `${VAR}`) |
 | `hasGitProviderAccess` | `true`, `unauthorizedProvider` unset -> pushes will deploy |
 | Domains | `premortem.lexcontra.com` -> service `web` :3000, `premortem-api.lexcontra.com` -> service `api` :8000, both https + letsencrypt |
-| Env keys stored | `OPENCODE_GO_API_KEY`, `OPENCODE_GO_BASE_URL`, `OPENCODE_SESSION`, `LLM_MODEL`, `HINDSIGHT_LLM_MODEL`, `NINEROUTER_URL`, `LLM_FALLBACK_MODEL`, `HINDSIGHT_BANK_ID`, `NEXT_PUBLIC_API_BASE_URL`, `MIN_PROOF` |
+| Env keys stored | `OPENCODE_GO_API_KEY` (live, 51 chars), `OPENCODE_GO_BASE_URL`, `OPENCODE_SESSION`, `LLM_MODEL=deepseek-v4.1-flash`, `HINDSIGHT_LLM_MODEL=deepseek-v4-flash`, `HINDSIGHT_LLM_EXTRA_HEADERS`, `NINEROUTER_URL`, `LLM_FALLBACK_MODEL=gareebi`, `HINDSIGHT_BANK_ID=premortem`, `NEXT_PUBLIC_API_BASE_URL`, `MIN_PROOF=1` |
 | Status | `idle` — not deployed. No `api/` or `web/` Dockerfiles exist yet, so a deploy now would fail |
 
 **Trap already hit, worth remembering:** `compose.update`'s `githubId` field is **not** the
@@ -115,8 +128,9 @@ Passing `gitProviderId` fails with a raw Postgres error (`Failed query: update "
 and sets the column to NULL. Also: `compose.update` rejects `owner`/`repository` when `githubId` is
 unset, so set the repo fields first, then `githubId`, then `composeFile`.
 
-Two remaining blockers: the new `OPENCODE_GO_API_KEY` (currently the placeholder
-`REPLACE_WITH_NEW_KEY` sits in the Dokploy env block), and the DNS records for both hostnames.
+Remaining blocker: **DNS** for `premortem.lexcontra.com` and `premortem-api.lexcontra.com`. Without those
+records the first deploy's Let's Encrypt challenge fails, and the stack has no `api/` or `web/` Dockerfiles
+to build yet anyway.
 
 ## 4. Stack shape on Dokploy
 

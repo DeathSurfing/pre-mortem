@@ -116,11 +116,15 @@ precedent. If nothing clears the bar in the relevant `service + change_class`, r
 Every chat call sends `x-opencode-session: $OPENCODE_SESSION` (a stable per-run string). OpenCode Go rejects
 chat without it (`MissingSessionID`), so this is a hard requirement, not an optimisation.
 
+Verified on `deepseek-v4-flash`: chat, auto tool calling, forced tool calling, JSON mode, and multi-turn
+`role:"tool"` loops all work. Hindsight's `reflect` drives forced tool calling internally, so the smoke test
+is expected to pass on the first try.
+
 | Call | Shape | Why |
 |---|---|---|
 | Flip-detail extraction | `{"model","messages","response_format":{"type":"json_object"}}`, schema echoed in the prompt | JSON mode is the portable path across both providers |
 | Memory-off baseline | same, no memories in prompt | the contrast beat |
-| Repair | one retry with a forced `tool_choice: {"type":"function",...}` | works on 9Router; belt-and-braces on OpenCode Go |
+| Repair | one retry with a forced `tool_choice: {"type":"function",...}` | verified working on both providers if JSON mode ever misbehaves |
 | Provider fallback | `LLM_FALLBACK_MODEL=gareebi` on 9Router, `NINEROUTER_*` env | keeps the demo alive if the primary lane misbehaves |
 
 Hindsight's own retain/reflect calls use the **native `opencode-go` provider** (`HINDSIGHT_API_LLM_PROVIDER`
