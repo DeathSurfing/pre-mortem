@@ -131,20 +131,30 @@ auth. 40 launches, 6 services, ~14 months, real-sounding service names and real-
 
 ```
 pre-mortem/
-  README.md          <- this file (5-year-old explainer lives here for the video)
-  PLAN.md            <- full plan: criteria mapping, SWOT, build order, risks
-  seed.py            <- synthetic launch history -> Hindsight
-  lookalike.py       <- recall + rank + flip-detail extraction
-  ledger.py          <- ignored warnings and what they cost
-  app.py             <- the one Streamlit screen
+  README.md              <- this file (5-year-old explainer lives here for the video)
+  PLAN.md                <- master plan: criteria mapping, SWOT, metrics, risks
+  docs/
+    ARCHITECTURE.md      <- modules, contracts, verified Hindsight API surface, prompts
+    DATA.md              <- the 40-launch corpus, 6 interlocked patterns, ground truth
+    DEMO.md              <- 60s/3min video script, shot list, article + social outline
+    CHECKLIST.md         <- day-1 build, pre-record, submission gates
+  seed.py                <- synthetic launch history -> Hindsight
+  lookalike.py           <- recall + rank + flip-detail extraction
+  ledger.py              <- ignored warnings and what they cost
+  app.py                 <- the one Streamlit screen
 ```
+
+Start with `docs/ARCHITECTURE.md` and `docs/DATA.md`; they fix every decision the build depends on.
 
 ## Setup
 
 ```bash
 pip install hindsight-client streamlit
+cp .env.example .env                # then fill in the keys below
 export HINDSIGHT_API_KEY=...        # Hindsight Cloud (promo MEMHACK99 for $50 credits)
 export GROQ_API_KEY=...             # free tier: openai/gpt-oss-120b
+python seed.py                      # build the 40-launch corpus, force consolidation
+python tests/run_all.py             # sanity checks, no framework needed
 streamlit run app.py
 ```
 
