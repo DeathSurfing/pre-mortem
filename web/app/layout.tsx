@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Newsreader, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import { themeScript } from "@/components/theme-toggle";
 
 const newsreader = Newsreader({
   subsets: ["latin"],
@@ -35,6 +36,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       lang="en"
       className={`${newsreader.variable} ${inter.variable} ${jetbrains.variable}`}
     >
+      <head>
+        {/* applied before first paint so the stored theme does not flash */}
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body className="font-sans bg-paper text-ink">{children}</body>
     </html>
   );

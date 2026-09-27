@@ -11,7 +11,9 @@ import {
   type Precedent,
   type PromptPreset,
 } from "@/lib/api";
-import { DecisionId, Label, Rule } from "@/components/editorial";
+import { DecisionId, Label } from "@/components/editorial";
+import { SourceRow } from "@/components/sources";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { cn } from "@/lib/utils";
 
 /* ------------------------------------------------------------------ atoms */
@@ -122,7 +124,7 @@ export default function Page() {
   const [presets, setPresets] = useState<PromptPreset[]>([]);
   const [ledger, setLedger] = useState<Ledger | null>(null);
   const [health, setHealth] = useState<Record<string, unknown> | null>(null);
-  const [showEvidence, setShowEvidence] = useState(true);
+  const [showEvidence, setShowEvidence] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const busyRef = useRef(false);
 
@@ -200,8 +202,9 @@ export default function Page() {
               onClick={() => setShowEvidence((v) => !v)}
               className="text-[12.5px] text-ink-muted underline decoration-rule underline-offset-4 transition-colors hover:text-ink"
             >
-              {showEvidence ? "hide" : "show"} evidence
+              {showEvidence ? "hide" : "show"} sources
             </button>
+            <ThemeToggle />
           </div>
         </div>
       </header>
@@ -371,57 +374,41 @@ export default function Page() {
               </div>
             )}
 
-            {/* the evidence */}
-            {showEvidence && t.precedents && t.precedents.length > 0 && (
-              <section className="mt-10">
-                <div className="flex items-baseline gap-3">
-                  <Label>What happened last time</Label>
-                  <span className="text-[12px] text-ink-faint">
-                    {t.precedents.length} precedents
-                    {t.cited?.length ? ` · ${t.cited.length} cited` : ""}
-                    {t.uncited?.length ? ` · ${t.uncited.length} uncited` : ""}
-                  </span>
-                </div>
-                <ul className="mt-1 divide-y divide-[var(--rule)]">
-                  {t.precedents.map((p) => (
-                    <Citation key={p.launch_id} p={p} />
-                  ))}
-                </ul>
+            {/* sources: always visible as pills, so every claim stays attributable at a glance.
+                The full records are behind the pill click, or revealed wholesale with "show sources". */}
+            {t.precedents && t.precedents.length > 0 && (
+              <SourceRow precedents={t.precedents} citedIds={t.cited ?? []} />
+            )}
 
+            {showEvidence && (
+              <section className="mt-8">
                 {t.unverified && t.unverified.length > 0 && (
-                  <p className="mt-3 text-[12.5px] text-risk-medium">
+                  <p className="mb-3 text-[12.5px] text-risk-medium">
                     {t.unverified.join(", ")}: id unverified against the corpus, so the content is used but the
                     id is not quoted.
                   </p>
                 )}
 
+                {/* expanded records, in citation order */}
+                <ul className="divide-y divide-[var(--rule)] rule-t rule-b">
+                  {t.precedents?.map((p) => (
+                    <Citation key={p.launch_id} p={p} />
+                  ))}
+                </ul>
+
                 {t.declined && t.declined.length > 0 && (
-                  <details className="mt-5 group">
-                    <summary className="cursor-pointer text-[12.5px] text-ink-faint hover:text-ink-muted">
-                      also considered and declined ({t.declined.length})
-                    </summary>
+                  <div className="mt-5">
+                    <Label>{t.noPrecedent ? "Considered and declined" : "Also considered and declined"}</Label>
                     <ul className="mt-3 space-y-2.5">
                       {t.declined.map((d) => (
                         <li key={d.launch_id} className="text-[13px] text-ink-muted">
-                          <DecisionId id={d.launch_id} /> · evidence {d.proof_count} — {d.reason}
+                          <DecisionId id={d.launch_id} />
+                          {!t.noPrecedent && <> · evidence {d.proof_count}</>} — {d.reason}
                         </li>
                       ))}
                     </ul>
-                  </details>
+                  </div>
                 )}
-              </section>
-            )}
-
-            {showEvidence && t.noPrecedent && t.declined && t.declined.length > 0 && (
-              <section className="mt-10">
-                <Label>Considered and declined</Label>
-                <ul className="mt-3 space-y-2.5">
-                  {t.declined.map((d) => (
-                    <li key={d.launch_id} className="text-[13px] text-ink-muted">
-                      <DecisionId id={d.launch_id} /> — {d.reason}
-                    </li>
-                  ))}
-                </ul>
               </section>
             )}
           </article>

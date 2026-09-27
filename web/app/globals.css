@@ -72,37 +72,6 @@
   --trend-new: #6b5f8f;
   --trend-weakening: #a8721c;
   --trend-stale: #94908a;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
 }
 
 @theme inline {
@@ -273,35 +242,60 @@
 }
 
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* Warm dark, not grey. Same paper/ink metaphor inverted, so the editorial feel survives the switch. */
+  --paper: #191817;
+  --paper-raised: #211f1e;
+  --paper-sunk: #131211;
+  --ink: #ece9e4;
+  --ink-soft: #c6c1b8;
+  --ink-muted: #9b958c;
+  --ink-faint: #716b63;
+  --rule: #302d2a;
+  --rule-strong: #3e3a35;
+
+  /* terracotta lifted for contrast on a dark ground */
+  --accent: #e08a63;
+  --accent-deep: #c2643f;
+  --accent-wash: #2b1f19;
+
+  /* risk hues re-tuned so they stay legible without glowing */
+  --risk-high: #e8735f;
+  --risk-high-wash: #2b1a17;
+  --risk-medium: #d9a441;
+  --risk-medium-wash: #2a2317;
+  --risk-low: #83b78c;
+  --risk-low-wash: #18231a;
+  --risk-unknown: #9b958c;
+  --risk-unknown-wash: #232120;
+
+  --trend-strengthening: #83b78c;
+  --trend-stable: #9b958c;
+  --trend-new: #a394d6;
+  --trend-weakening: #d9a441;
+  --trend-stale: #716b63;
+
+  /* shadcn semantics, re-pointed at the dark brand values */
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card: var(--paper-raised);
+  --card-foreground: var(--ink);
+  --popover: var(--paper-raised);
+  --popover-foreground: var(--ink);
+  --primary: var(--accent);
+  --primary-foreground: #1a1917;
+  --secondary: var(--paper-sunk);
+  --secondary-foreground: var(--ink-soft);
+  --muted: var(--paper-sunk);
+  --muted-foreground: var(--ink-muted);
+  --accent-foreground: var(--ink);
+  --destructive: var(--risk-high);
+  --border: var(--rule);
+  --input: var(--rule-strong);
+  --ring: var(--accent);
+
+  /* font aliases must be redeclared: custom properties on .dark shadow the :root ones for descendants */
+  --font-sans: "Inter", "Inter Fallback", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", "JetBrains Mono Fallback", ui-monospace, SFMono-Regular, monospace;
+  --font-heading: "Newsreader", "Newsreader Fallback", Georgia, "Times New Roman", serif;
+  color-scheme: dark;
 }
