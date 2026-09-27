@@ -80,11 +80,23 @@ def main() -> int:
         return 1
     check("service reachable", True)
     check("no config problems", not h.get("problems"), "; ".join(h.get("problems") or []))
-    check("hindsight api reachable", bool((h.get("features") or {}).get("api_version")),
-          str((h.get("features") or {}).get("api_version")))
     laya = h.get("laya") or {}
     check("laya enabled", bool(laya.get("enabled")), json.dumps(laya)[:120])
     check("laya loaded (or loads on first use)", laya.get("error") is None, str(laya.get("error")))
+
+    # /health is liveness and deliberately answers from local state only, so Hindsight reachability moved to
+    # /health/deep when a slow dependency was found to be marking the container unhealthy and having Traefik
+    # withdraw the route. Assert the split explicitly, so a future edit cannot quietly put a network call back
+    # into the healthcheck path.
+    check("liveness makes no remote call", "features" not in h and "documents" not in h,
+          f"unexpected networked keys: {sorted(set(h) & {'features', 'documents'})}")
+    check("liveness names the business bank", h.get("bank_id") == "bizdecisions", str(h.get("bank_id")))
+
+    deep = get(f"{base}/health/deep")
+    check("hindsight api reachable", bool((deep.get("features") or {}).get("api_version")),
+          str((deep.get("features") or {}).get("api_version")))
+    check("deep health lists bank documents", len(deep.get("documents") or []) > 0,
+          str(len(deep.get("documents") or [])))
     check("models configured", bool((h.get("models") or {}).get("llm")), str(h.get("models")))
 
     print("== 2. prompts available ==")

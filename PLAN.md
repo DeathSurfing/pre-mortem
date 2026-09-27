@@ -5,6 +5,14 @@ Idea: **Change-Risk Lookalike Memory.** Repo name `pre-mortem`.
 
 Tagline: *Your deploy history, argued back at you before you ship.*
 
+> **Plan vs. what shipped.** This is the original plan and is left in future tense. A few mechanical things
+> came out differently and are corrected inline below: Hindsight runs on **Vectorize Cloud**, not a FOSS
+> self-host; the app's LLM is **OpenCode Go** with the 9Router fallback deliberately disabled; the domain
+> moved from deploy/launch history to **business decisions** (the deploy corpus survives as a second,
+> legacy bank, `premortem`, alongside the live `bizdecisions`); and the shape is **five presets (A-E)**
+> routed through a **three-mode router**, not three presets answered single-shot. Everything else here,
+> including the 4h build order and the metric targets, is the plan.
+
 ## The problem, stated so judges feel it
 
 Every org runs change review by hand. Someone reads a diff, thinks "this looks like the time we broke
@@ -63,7 +71,8 @@ guarantee. Being precise here is worth more than the original claim was.
 ### Technical implementation (20%) — small, clean, honest
 
 Small and split: a FastAPI service (corpus, seeding, ranking, replay, ledger) and a Next.js screen. No broker,
-no third-party AI API beyond 9Router, no auth, no database of our own (Hindsight owns the memory).
+no auth, no database of our own (Hindsight owns the memory). One LLM provider (OpenCode Go) plus a local
+classifier (Laya) that runs in the api image.
 
 Edge cases handled on camera, because handling them is what earns this axis:
 - **no precedent** -> `no_precedent` response, never a stretched analogy;
@@ -100,6 +109,10 @@ Print the seed's ground truth so a judge can spot-check any single flag. Numbers
 from the corpus are the easiest thing to disbelieve.
 
 ## 60-second demo script
+
+> Note on the shipped screen: presets are now **A-E**, and the frontend no longer wires a `MEMORY=on/off`
+> toggle (the API accepts `memory: bool` on `/api/biz/redflag` and `/api/biz/redflag/stream`, but nothing in
+> `web/` sets it, so beat 1 below is plan rather than current UI). The five presets are the demo surface.
 
 1. **0-12s** Memory off, paste a pending config-only change to `payments-service`. Generic output: "review
    for risk, ensure rollback plan, monitor metrics." Nothing checkable.
@@ -153,8 +166,8 @@ second use case would cost the build day.
 | 1:50-2:35 | `api/`: `lookalike.py` — recall (free, no LLM) + Python-side `occurred_start` filter, deterministic `rank`, flip-detail via OpenCode Go JSON mode, `no_precedent` path. Freeze the `Assessment` contract |
 | 2:35-3:00 | `api/`: `ledger.py` + `replay.py` — flags and promotion, epoch replay cached to `replay.json`, `/api/metrics` |
 | 3:00-4:20 | `web/`: one screen — change panel, memory toggle, risk banner, precedent cards with citations, **flip detail as the hero**, declined list, ledger, metrics charts, prompt preview |
-| 4:20-4:40 | Bank `mission` / `directives` / `disposition`, 2 `mental_models`, three presets end to end, freeze numbers, raw screen capture |
-| 4:40-5:00 | `/health` + `configProblems()`, compose wiring, push to `main`, watch the Dokploy deploy go `done`, `curl /health` on the deployed URL, README update |
+| 4:20-4:40 | Bank `mission` / `directives` / `disposition`, 2 `mental_models`, presets end to end (**five landed, A-E**), freeze numbers, raw screen capture |
+| 4:40-5:00 | `/health` + `configProblems()`, compose wiring, push to `master` (**not `main`**; that is the branch the Dokploy stack tracks), watch the Dokploy deploy go `done`, `curl /health` on the deployed URL, README update |
 
 **Cut list, in order if behind:**
 1. Metrics charts -> a static numbers row from `replay.json`. Do not build a charting layer for four numbers.
@@ -193,10 +206,11 @@ second use case would cost the build day.
 
 | Decision | Choice | Reason |
 |---|---|---|
-| LLM (primary) | **OpenCode Go**, `deepseek-v4-flash` for extraction, `deepseek-v4.1-flash` for our app | one OpenAI-compatible provider for both Hindsight and the app; Hindsight has a native `opencode-go` provider |
-| LLM (fallback) | 9Router `gareebi` | verified working today; one-line env swap in `docker-compose.yml` |
-| Hindsight | FOSS self-host, not Cloud | Cloud pins the extraction provider, so it cannot use OpenCode Go. `docs/MODELS.md` |
-| Embeddings | Hindsight local (`BAAI/bge-small-en-v1.5`) | OpenCode Go has no `/v1/embeddings`; local removes the last external dependency |
+| LLM (primary) | **OpenCode Go**, `deepseek-v4-flash` for extraction, `deepseek-v4.1-flash` for our app | one OpenAI-compatible provider for both Hindsight and the app |
+| LLM (fallback) | none. `LLM_FALLBACK_MODEL` is deliberately blank | the 9Router lane returned "Model is unavailable" under load, and a dead fallback doubles latency on every call. `gareebi` was verified working earlier but is not wired in |
+| Hindsight | **Vectorize Cloud** (the self-host plan in `docs/MODELS.md` section 2 was abandoned) | the probe results in `docs/MODELS.md` section 9 were measured against Cloud 0.10.1. Self-hosting was going to give one provider for the whole system, but Cloud shipped instead |
+| Local classifier | **Laya** ONNX int4, baked into the api image | replaces the per-request LLM domain call with a calibrated local one; also routes the three modes |
+| Embeddings | served by Hindsight Cloud | the app makes no embedding calls of its own |
 | UI | Next.js App Router + Tailwind, split from the backend | UI is 15% of the score and is what judges watch |
 | Backend | FastAPI, owns all Hindsight access | one contract, testable without a browser, precomputed replay |
 | Deploy | Dokploy, project `pre-mortem`, compose stack from `DeathSurfing/pre-mortem` via the `pre-mortem-Vikk` GitHub app | deploy-path bugs pass CI green, so we verify the real deploy before recording |
