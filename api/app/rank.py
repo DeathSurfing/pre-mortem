@@ -302,22 +302,36 @@ def verify_attribution(p: dict[str, Any]) -> tuple[bool, str]:
     return True, ""
 
 
+# Outcome vocabularies differ per corpus and both must count as "this went wrong":
+#   deploy corpus:   incident, degraded   (clean = fine)
+#   business corpus: bad, mixed           (good = fine)
+# A precedent with no recorded outcome counts as neither, so it can support but never inflate risk.
+BAD_OUTCOMES = {"incident", "degraded", "bad", "mixed"}
+GOOD_OUTCOMES = {"clean", "good"}
+
+
 def verdict(precedents: list[dict[str, Any]], *, service: str | None, change_class: str | None) -> dict[str, Any]:
     """Risk comes from precedent outcomes, not from the model."""
     if not precedents:
         return {"risk": "unknown", "confidence": 0.0, "no_precedent": True, "rules": "no precedent clears MIN_PROOF"}
-    conflicting = [p for p in precedents if not p.get("is_mirror") and p.get("outcome") in ("incident", "degraded")]
+    conflicting = [p for p in precedents if not p.get("is_mirror") and p.get("outcome") in BAD_OUTCOMES]
     mirrors = [p for p in precedents if p.get("is_mirror")]
     if conflicting and mirrors:
-        risk = "medium"
-        why = "precedent broke, but a near-identical clean launch exists: the outcome turns on the differing detail"
+        risk = "high"
+        why = (f"{len(conflicting)} past decision(s) of this shape went badly, and a near-identical one "
+               f"went fine: the outcome turns on the differing detail below")
     elif conflicting:
         risk = "high"
-        why = "every precedent of this shape materialised"
-    else:
+        why = f"{len(conflicting)} past decision(s) of this shape went badly, with no counter-example"
+    elif mirrors:
         risk = "low"
-        why = "precedents of this shape resolved cleanly"
+        why = "the nearest precedent is a near-identical decision that went fine"
+    else:
+        risk = "medium"
+        why = "precedents exist but none records a bad outcome, so this is not evidence of safety"
     top = precedents[0]["score"]["proof"]
     conf = min(0.95, 0.35 + 0.12 * top + (0.1 if len(precedents) > 1 else 0.0))
+    if conflicting:
+        conf = min(0.95, conf + 0.1)   # a recorded failure is stronger evidence than its proof count implies
     return {"risk": risk, "confidence": round(conf, 2), "no_precedent": False, "rules": why,
             "conflicting": len(conflicting), "mirrors": len(mirrors)}
