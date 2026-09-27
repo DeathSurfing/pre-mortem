@@ -4,3 +4,11 @@ uvicorn[standard]==0.54.0
 httpx==0.28.1
 pydantic==2.13.5
 hindsight-client==0.10.1
+
+# Laya: local System One decision model (Apache-2.0). Used to classify a free-text business decision
+# into a domain locally, offline, with calibrated probabilities instead of an LLM call.
+# CPU-only torch is what fits the container: the ONNX int4 build peaks at ~996MB RSS.
+--extra-index-url https://download.pytorch.org/whl/cpu
+laya==0.3.20
+onnxruntime==1.30.0
+huggingface_hub>=0.20.0

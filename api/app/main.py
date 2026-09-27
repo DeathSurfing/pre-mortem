@@ -10,8 +10,9 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from . import hindsight, ledger, lookalike, replay
-from .config import settings
+from . import (bizcorpus, bizledger, bizlookalike, hindsight, laya_client, ledger, lookalike,
+               replay)
+from .config import (BIZ_DIRECTIVES, BIZ_MISSION, BIZ_RETAIN_INSTRUCTIONS, settings)
 from .corpus import ground_truth, PRESETS, PRESET_BY_KEY, corpus
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -48,6 +49,7 @@ async def health() -> dict[str, Any]:
         "models": {"llm": s.llm_model, "fallback": s.llm_fallback_model, "min_proof": s.min_proof},
     }
     out["features"] = await hindsight.features()
+    out["laya"] = laya_client.status()
     try:
         cfg = await hindsight.ensure_bank()
         out["bank"] = {
@@ -160,6 +162,101 @@ async def prompt_preview(operation: str = "retain") -> dict[str, Any]:
 async def gt() -> dict[str, Any]:
     p = DATA_DIR / "ground_truth.json"
     return json.loads(p.read_text()) if p.exists() else ground_truth()
+
+
+class RedflagBody(BaseModel):
+    prompt: str = ""
+    preset: str | None = None          # optional canned prompt key (A/B/C)
+    memory: bool = True
+    engine: str = "recall"             # recall (1 LLM call) | reflect (Hindsight answers it itself)
+    use_ledger: bool = True
+    seed_classification: str | None = None   # "domain:decision_type", for tests only
+
+
+# ---------------------------------------------------------------- business decisions
+
+@app.get("/api/biz/prompts")
+async def biz_prompts() -> list[dict[str, Any]]:
+    return [{"key": p.key, "label": p.label, "text": p.text,
+             "expect_domain": p.expect_domain, "expect_type": p.expect_type, "expect": p.expect}
+            for p in bizcorpus.PROMPTS]
+
+
+@app.post("/api/biz/redflag")
+async def biz_redflag(body: RedflagBody) -> dict[str, Any]:
+    text = body.prompt
+    if body.preset and not text:
+        match = bizcorpus.PROMPT_BY_KEY.get(body.preset)
+        if match is None:
+            raise HTTPException(404, f"unknown preset {body.preset}")
+        text = match.text
+    if not text.strip():
+        raise HTTPException(422, "provide a prompt or a preset key")
+    promoted = await bizledger.promoted_classes() if (body.use_ledger and body.memory) else set()
+    if body.engine == "reflect" and body.memory:
+        out = await bizlookalike.redflag_reflect(text, promoted=promoted)
+    else:
+        out = await bizlookalike.redflag(text, memory=body.memory, promoted=promoted,
+                                         seed=body.seed_classification)
+    out["ledger_promoted"] = sorted(promoted)
+    return out
+
+
+@app.get("/api/biz/ledger")
+async def biz_ledger() -> dict[str, Any]:
+    return await bizledger.summary()
+
+
+@app.get("/api/biz/bank")
+async def biz_bank() -> dict[str, Any]:
+    bid = settings().biz_bank_id
+    return {
+        "bank_id": bid,
+        "config": await hindsight.ensure_bank(bid, mission=BIZ_MISSION,
+                                             instructions=BIZ_RETAIN_INSTRUCTIONS,
+                                             name="business decisions"),
+        "directives": await hindsight.list_directives(bid),
+        "stats": await hindsight.agent_stats(bid),
+        "documents": await hindsight.list_documents(limit=200, bank_id=bid),
+    }
+
+
+@app.post("/api/biz/seed")
+async def biz_seed(force: bool = Query(False, description="delete existing documents first")) -> dict[str, Any]:
+    """Seed the business corpus. 36 retains, each costing extraction tokens."""
+    bid = settings().biz_bank_id
+    out: dict[str, Any] = {"bank_id": bid}
+    if force:
+        docs = [d for d in await hindsight.list_documents(limit=300, bank_id=bid) if d.get("id")]
+        out["deleted"] = await hindsight.delete_documents([d["id"] for d in docs], bank_id=bid)
+    out["bank"] = await hindsight.ensure_bank(bid, mission=BIZ_MISSION,
+                                             instructions=BIZ_RETAIN_INSTRUCTIONS,
+                                             name="business decisions")
+    out["seed"] = await hindsight.seed(bizcorpus.corpus(), bank_id=bid,
+                                       context="business decision record")
+    out["ledger"] = await bizledger.seed_ledger(bid)
+    out["consolidate"] = await hindsight.recover_consolidation(bid)
+    out["observations"] = await hindsight.wait_for_observations(bank_id=bid)
+    out["stats_after"] = await hindsight.agent_stats(bid)
+    DATA_DIR.mkdir(exist_ok=True)
+    gt = bizcorpus.ground_truth()
+    (DATA_DIR / "biz_ground_truth.json").write_text(json.dumps(gt, indent=1))
+    out["ground_truth_totals"] = gt["totals"]
+    return out
+
+
+@app.post("/api/biz/consolidate")
+async def biz_consolidate(wait: bool = Query(True)) -> dict[str, Any]:
+    bid = settings().biz_bank_id
+    rec = await hindsight.recover_consolidation(bid)
+    waited = await hindsight.wait_for_observations(bank_id=bid) if wait else None
+    return {"recover": rec, "observations": waited, "stats": await hindsight.agent_stats(bid)}
+
+
+@app.get("/api/biz/ground-truth")
+async def biz_gt() -> dict[str, Any]:
+    p = DATA_DIR / "biz_ground_truth.json"
+    return json.loads(p.read_text()) if p.exists() else bizcorpus.ground_truth()
 
 
 @app.post("/api/health/llm")

@@ -41,7 +41,8 @@ RETAIN_INSTRUCTIONS = (
 )
 
 
-async def ensure_bank() -> dict[str, Any]:
+async def ensure_bank(bank_id: str | None = None, mission: str | None = None,
+                      instructions: str | None = None, name: str = "pre-mortem") -> dict[str, Any]:
     """Idempotent bank create/update: mission, disposition, retain instructions, then directives.
 
     Note: CreateBankRequest has no `directives` field. Directives are a separate resource
@@ -49,38 +50,39 @@ async def ensure_bank() -> dict[str, Any]:
     so we reconcile against the existing list first.
     """
     s = settings()
+    bank = bank_id or s.bank_id
     req = CreateBankRequest(
-        name="pre-mortem",
-        mission=MISSION,
+        name=name,
+        mission=mission or MISSION,
         disposition=DispositionTraits(skepticism=4, literalism=5, empathy=2),
         enable_observations=True,
-        retain_custom_instructions=RETAIN_INSTRUCTIONS,
+        retain_custom_instructions=instructions or RETAIN_INSTRUCTIONS,
     )
-    await client().banks.create_or_update_bank(s.bank_id, req)
+    await client().banks.create_or_update_bank(bank, req)
 
-    existing = await list_directives()
+    existing = await list_directives(bank)
     have = {d["content"] for d in existing}
     created = []
     for i, text in enumerate(DIRECTIVES):
         if text in have:
             continue
         try:
-            await client().acreate_directive(bank_id=s.bank_id, name=f"guardrail-{i + 1}",
+            await client().acreate_directive(bank_id=bank, name=f"guardrail-{i + 1}",
                                              content=text, priority=10 - i)
             created.append(text[:40])
         except Exception as e:  # noqa: BLE001
             log.warning("directive create failed: %s", e)
 
-    cfg = await client().banks.get_bank_config(s.bank_id)
+    cfg = await client().banks.get_bank_config(bank)
     out = cfg if isinstance(cfg, dict) else cfg.to_dict()
     out["directives_created"] = created
-    out["directives_total"] = len(await list_directives())
+    out["directives_total"] = len(await list_directives(bank))
     return out
 
 
-async def list_directives() -> list[dict[str, Any]]:
+async def list_directives(bank_id: str | None = None) -> list[dict[str, Any]]:
     try:
-        r = await client().alist_directives(settings().bank_id)
+        r = await client().alist_directives(bank_id or settings().bank_id)
         items = getattr(r, "items", None) or []
         return [{"name": getattr(d, "name", None), "content": getattr(d, "content", None),
                  "priority": getattr(d, "priority", None), "is_active": getattr(d, "is_active", None)}
@@ -128,20 +130,24 @@ async def health_check_llm() -> dict[str, Any]:
         return {"method": "reflect-probe", "ok": False, "detail": f"{type(e).__name__}: {e}"[:200]}
 
 
-async def seed(launches) -> dict[str, Any]:
-    """Retain every launch. One document per launch, timestamped at the launch date."""
+async def seed(launches, bank_id: str | None = None, context: str = "post-deploy change record") -> dict[str, Any]:
+    """Retain one document per record, timestamped at the record's own date.
+
+    Works for any corpus whose objects expose `.text()`, `.date`, `.launch_id` and `.metadata()`
+    (the deploy corpus and the business corpus both do).
+    """
     s = settings()
     items = [
         {
             "content": l.text(),
-            "context": "post-deploy change record",
+            "context": context,
             "timestamp": l.date.isoformat(),
-            "document_id": l.launch_id,
+            "document_id": getattr(l, "launch_id", None) or getattr(l, "decision_id", None),
             "metadata": l.metadata(),
         }
         for l in launches
     ]
-    r = await client().aretain_batch(bank_id=s.bank_id, items=items, retain_async=False)
+    r = await client().aretain_batch(bank_id=bank_id or s.bank_id, items=items, retain_async=False)
     txt = str(r)
     tokens = None
     usage = getattr(r, "usage", None)
@@ -172,10 +178,10 @@ async def delete_documents(doc_ids: list[str]) -> int:
 
 async def recall(query: str, *, types: list[str] | None = None, budget: str = "mid",
                  max_tokens: int = 1200, include_chunks: bool = True,
-                 include_entities: bool = True) -> list[dict[str, Any]]:
+                 include_entities: bool = True, bank_id: str | None = None) -> list[dict[str, Any]]:
     """Retrieval only. No LLM cost. Returns normalized dicts."""
     r = await client().arecall(
-        bank_id=settings().bank_id,
+        bank_id=bank_id or settings().bank_id,
         query=query,
         types=types or ["world", "experience", "observation"],
         budget=budget,
@@ -202,7 +208,8 @@ async def recall(query: str, *, types: list[str] | None = None, budget: str = "m
     return out
 
 
-async def wait_for_observations(timeout_s: int = 180, poll_s: int = 10) -> dict[str, Any]:
+async def wait_for_observations(timeout_s: int = 180, poll_s: int = 10,
+                                bank_id: str | None = None) -> dict[str, Any]:
     """Consolidation is a background job: observations appear AFTER retain, not during it.
 
     Verified behaviour: immediately after seeding, `total_observations` is 0 and
@@ -216,7 +223,7 @@ async def wait_for_observations(timeout_s: int = 180, poll_s: int = 10) -> dict[
     last: dict[str, Any] = {}
     while _t.time() - started < timeout_s:
         try:
-            st = await agent_stats()
+            st = await agent_stats(bank_id)
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
         last = {"total_observations": st.get("total_observations"),
@@ -224,14 +231,14 @@ async def wait_for_observations(timeout_s: int = 180, poll_s: int = 10) -> dict[
                 "nodes_by_fact_type": st.get("nodes_by_fact_type")}
         if (st.get("total_observations") or 0) > 0:
             return {"ok": True, "waited_s": round(_t.time() - started, 1), **last}
-        await recover_consolidation()
+        await recover_consolidation(bank_id)
         await asyncio.sleep(poll_s)
     return {"ok": False, "timed_out_s": timeout_s, **last}
 
 
-async def recover_consolidation() -> dict[str, Any]:
+async def recover_consolidation(bank_id: str | None = None) -> dict[str, Any]:
     try:
-        r = await client().banks.recover_consolidation(settings().bank_id)
+        r = await client().banks.recover_consolidation(bank_id or settings().bank_id)
         return {"ok": True, "detail": str(r)[:200]}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"[:200]}
