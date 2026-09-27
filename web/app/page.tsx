@@ -123,8 +123,9 @@ type Turn = {
   guess?: GuessBlock | null;
   /** A follow-up in an existing thread: answered in compact prose, without repeating the whole dossier. */
   followUp?: boolean;
-  /** `chat` = ordinary conversation, rendered as a plain message with no verdict or citations. */
-  mode?: "decision" | "chat";
+  /** `chat` = conversation with no citations. `query` = a question about the records: cites them, but is
+   *  not a verdict on a decision being considered. */
+  mode?: "decision" | "chat" | "query";
   /** The model's streamed reasoning trace, shown collapsed. */
   thinking?: string;
   error?: string;
@@ -396,7 +397,7 @@ export default function Page() {
                   - follow-up: compact prose only. Same memory and same citations, no repeated dossier
                   - opening question: the full dossier, prose left and the apparatus at the margin
             */}
-            {t.mode === "chat" ? (
+            {t.mode === "chat" || t.mode === "query" ? (
               // Ordinary conversation: plain prose, no risk banner, no dossier, no citations. The whole
               // point is that it reads as a normal assistant reply, not as a reviewed decision.
               <div className="mt-5 max-w-[68ch]">

@@ -72,14 +72,18 @@ CLASSIFY_SYSTEM = (
     "Give `decision_type` as a short kebab-case label describing the mechanics of the decision "
     "(discount, senior-hire, vendor-switch, budget-shift, build, buy, feature-ga, price-increase, "
     "new-office, audit-finding, incident-response, reseller-agreement, datacenter-region, and so on).\n"
-    "Also decide `mode`:\n"
+    "Also decide `mode`, one of three:\n"
     "  \"decision\" if the message asks for a judgement or review of a specific business decision the sender "
     "is considering or has made (should we / is this a good idea / what do you think of this plan / review "
     "this proposal).\n"
-    "  \"chat\" for everything else: greetings, thanks, questions about this tool or how it works, questions "
-    "about what happened in the past, small talk, or a follow-up asking for more detail on an answer already "
-    "given. When unsure prefer \"chat\": a chat reply is cheap, while treating a greeting as a decision "
-    "produces a verdict the sender never asked for.\n"
+    "  \"query\" if it asks a question about the company's OWN recorded history and decisions: what went "
+    "wrong, what cost the most, which decisions were bad, how many were there, what did we decide about X, "
+    "what patterns show up. These are answerable from the records, so they must not be answered from general "
+    "knowledge.\n"
+    "  \"chat\" for everything else: greetings, thanks, questions about this tool or how it works, small "
+    "talk, or a follow-up asking for more detail on an answer already given. When unsure prefer \"chat\": a "
+    "chat reply is cheap, while treating a greeting as a decision produces a verdict the sender never asked "
+    "for.\n"
     "Do not give an opinion, a risk assessment, or advice. Classify only. Return JSON with the keys "
     "`mode`, `domain`, `decision_type`, `intent`, and `rationale`."
 )
@@ -128,6 +132,24 @@ CLASSIFY_SCHEMA = {
 
 # A plain conversational reply. No memory is consulted and no id may be cited, because a normal chat answer
 # must never look like a reviewed decision.
+# A question about the company's own records. Unlike chat this MUST be grounded in recalled history, so the
+# records are supplied and ids are required in the answer.
+QUERY_SYSTEM = (
+    "You are the assistant inside pre-mortem, a tool that holds a company's recorded decision history.\n"
+    "The user has asked a question ABOUT THAT HISTORY, and the matching records have been retrieved for you "
+    "below. Answer from them and nothing else.\n"
+    "Rules, in order of importance:\n"
+    "1. Ground every claim in the records you were given. If they do not answer the question, say exactly "
+    "what is missing rather than filling the gap with general business knowledge.\n"
+    "2. Name the decision ids inline wherever you make a claim, exactly as written in the records (for "
+    "example D-2025-0002). Never invent, alter, or guess an id.\n"
+    "3. Lead with the direct answer in the first sentence. This is a factual question, not a review.\n"
+    "4. Give a risk level or recommendation ONLY if the question asks for one. A question like 'what caused "
+    "the most loss' wants the answer, not advice.\n"
+    "5. Plain prose, 2-5 sentences, no headings. Be concrete: name the amount, the decision, the outcome.\n"
+    "6. If count or ranking matters, count only the records given to you and say so."
+)
+
 FOLLOWUP_SYSTEM = (
     "You are the assistant inside pre-mortem. Earlier in this conversation the user put a business decision "
     "to you and you reviewed it against the company's recorded history; the exchange is in the message "
@@ -379,13 +401,17 @@ async def classify(text: str) -> tuple[dict[str, Any], dict[str, Any]]:
             if prob >= LAYA_MODE_DECISION:
                 mode = "decision"
             elif prob <= LAYA_MODE_CHAT:
-                mode = "chat"
+                # low, but a question about the records can score low too, so honour `query` here
+                picked = str(parsed.get("mode", "")).strip().lower()
+                mode = picked if picked in ("chat", "query") else "chat"
             else:
-                mode = "chat" if str(parsed.get("mode", "")).strip().lower() == "chat" else "decision"
+                picked = str(parsed.get("mode", "")).strip().lower()
+                mode = picked if picked in ("chat", "query") else "decision"
                 parsed["mode_arbitration"] = f"laya ambiguous ({prob:.2f}), model decided"
     else:
         # no Laya available: the model's own field is all we have
-        mode = "chat" if str(parsed.get("mode", "")).strip().lower() == "chat" else "decision"
+        picked = str(parsed.get("mode", "")).strip().lower()
+        mode = picked if picked in ("chat", "query") else "decision"
     parsed["mode"] = mode
     if parsed.get("domain") not in DOMAINS:
         parsed["domain"] = "operations"
@@ -633,6 +659,51 @@ async def redflag_stream(text: str, *, promoted: set[str] | None = None,
                  follow_up=attrs.get("follow_up", False),
                  intent=attrs.get("intent"), rationale=attrs.get("rationale"),
                  laya=attrs.get("laya"), llm_calls=cmeta.get("llm_calls", 0))
+
+        # A question about the company's own records. This is NOT chat: it needs recall, and it must be
+        # grounded. Answering it from general knowledge is how you get "I don't have your records" from a tool
+        # whose entire job is holding those records.
+        if attrs.get("mode") == "query":
+            yield ev("status", message="searching the company's records", step="query")
+            qtext = " ".join([attrs.get("intent") or "", attrs.get("rationale") or "",
+                              " ".join(attrs.get("keywords") or []), text])[:1200]
+            qrecalled = await hindsight.recall(qtext, budget="mid", max_tokens=1800,
+                                               bank_id=s.biz_bank_id)
+            # Unfiltered: a history question ("what cost the most") is not scoped to one domain or shape.
+            qranked = rank(qrecalled, now=now, promoted=promoted, service=None, change_class=None,
+                           min_proof=0)
+            qprecs = qranked[:8]
+            qids = sorted({r["launch_id"] for r in qprecs if r.get("launch_id")})
+
+            # The records themselves, id first so the model can cite what it is given.
+            lines = []
+            for r in qprecs:
+                body = (r.get("text") or "").strip().replace("\n", " ")
+                lines.append(
+                    f"- {r['launch_id']} | {r.get('date') or 'date unknown'} | "
+                    f"{r.get('service') or '?'} / {r.get('change_class') or '?'} | "
+                    f"outcome: {r.get('outcome') or 'NOT RECORDED'}\n  {body[:600]}"
+                )
+            record_block = "\n".join(lines) if lines else "(no records matched this question)"
+
+            yield ev("precedents", precedents=qprecs, declined=[],
+                     note="records retrieved for this question")
+
+            async for kind, piece in chat_stream(
+                QUERY_SYSTEM,
+                f"QUESTION\n{text}\n\nRECORDS RETRIEVED ({len(qprecs)})\n{record_block}\n\n"
+                f"Answer the question from these records only, naming ids inline.",
+                max_tokens=2000, reasoning=True, history=history,
+            ):
+                if kind == "reasoning":
+                    yield ev("reasoning", text=piece)
+                else:
+                    yield ev("delta", text=piece)
+
+            yield ev("done", engine={"ranker": "query (unfiltered recall)", "mode": "query",
+                                     "llm_calls": cmeta.get("llm_calls", 0) + 1, "model": s.llm_model},
+                     facts_used=qids, citations_in_prose=qids, attribution_unverified=[])
+            return
 
         # Ordinary conversation: answer it and stop. No recall, no verdict, no citations, and the frontend
         # renders it as a plain chat bubble rather than a reviewed decision.

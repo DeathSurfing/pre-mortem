@@ -47,7 +47,7 @@ export type Opinion = {
 export type StreamEvent =
   | { type: "status"; message: string; step: string }
   | { type: "ledger"; promoted: string[] }
-  | { type: "classify"; domain: string; decision_type: string; mode?: "decision" | "chat"; follow_up?: boolean; intent: string; rationale: string; laya: LayaSignals | null }
+  | { type: "classify"; domain: string; decision_type: string; mode?: "decision" | "chat" | "query"; follow_up?: boolean; intent: string; rationale: string; laya: LayaSignals | null }
   | { type: "verdict"; risk: "high" | "medium" | "low" | "unknown"; confidence: number; no_precedent: boolean; rules: string; relaxed: boolean }
   | { type: "precedents"; precedents: Precedent[]; declined: Declined[] }
   | { type: "delta"; text: string }
