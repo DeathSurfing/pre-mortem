@@ -13,6 +13,11 @@ Warm paper, serif headlines, hairline rules. One terracotta accent. **Risk colou
 colour on screen**, so when something is red it always means the same thing. The evidence sits as a
 footnote apparatus, not as competing panels. Shoot against this, not against a dashboard aesthetic.
 
+The page is light by default and follows your system theme; dark mode is a warm inversion, not grey.
+Context (calibration, engine detail, settings) lives in a collapsible drawer behind the panel icon at the
+left of the masthead, so the reading column stays clean. **Open the drawer on camera at least once** — it
+is where the theme control, the evidence toggle, and the calibration numbers live.
+
 ## Video: 3:00 total, five beats
 
 The review streams, so beats 2 and 3 are naturally cinematic: the text types itself out and the risk
@@ -58,8 +63,11 @@ three "Try one" rows).
 
 ### Beat 3 — the difference (1:35-2:20) *[record twice]*
 
-**Visual:** scroll to the terracotta **THE DIFFERENCE** block at the margin, then the citation list:
+**Visual:** scroll to the terracotta **THE DIFFERENCE** block at the margin, then the source pills:
 `D-2025-0002` (evidence 2), `D-2025-0013` (went badly), `D-2025-0023` (near-identical, went fine).
+**Hover one pill** to show the preview card, then **click it** to expand the full record. Every id named in
+the prose is the same pill, so a claim and its evidence are the same object on screen. The evidence list is
+collapsed by default — that is deliberate, not a bug.
 
 **On screen:** *"The uncommitted 30 percent in D-2025-0013 went bad; the near-identical 30 percent in
 D-2025-0023 went fine, and the only recorded difference is that D-2025-0023 was 'in exchange for a 3-year
@@ -75,29 +83,35 @@ term commitment and a 250-seat volume floor.'"*
 
 **Visual:** click the third row: *"We are considering opening an office in Lisbon."*
 
-**On screen:** `No precedent`, no confidence number, zero citations, and the "considered and declined"
-list.
+**On screen:** `No precedent`, no confidence number, zero citations, the "considered and declined" list,
+and then the fenced **"If I had to guess"** panel: `low confidence`, a general-practice paragraph, and three
+things that would change the decision.
 
 **Narration:**
 > And when our history has nothing, it says so. No precedent, no confident answer, no stretched analogy.
-> It shows what it looked at and declined. Restraint is the feature.
+> It shows what it looked at and declined.
+> Then, separately and clearly labelled, it will tell you what general practice says — marked low
+> confidence, forbidden from citing anything, because a guess dressed up as a citation would destroy the
+> only thing that makes this worth trusting. Restraint is the feature; the guess is the consolation prize,
+> and you can always tell them apart.
 
 ### Beat 5 — the ledger and close (2:50-3:00)
 
-**Visual:** the ledger strip under the masthead: `4 of 5 warnings ignored, 3 of those cost something`, and
-the three promoted classes.
+**Visual:** open the context drawer (panel icon, left of the masthead). Calibration reads **warnings
+raised 5 · ignored anyway 4 · of those, cost something 3**, with the three promoted classes beneath and the
+decisions themselves expandable below that.
 
 **Narration:**
-> It also remembers when we were warned and did it anyway. Four of five warnings ignored, three of those
-> cost us. So those classes are what it leads with now.
+> It also remembers when we were warned and did it anyway. Five warnings raised, four ignored, three of
+> those cost us. So those classes are what it leads with now.
 > A memory that argues with you before you decide, and knows when to shut up.
 
 ## Shot list (record in this order)
 
 | # | Shot | State needed |
 |---|---|---|
-| 1 | Masthead + ledger strip + `local classifier ready` | seeded banks |
-| 2 | Empty state: serif headline, the three "Try one" rows, "How it works" aside | live API |
+| 1 | Masthead, then open the drawer: theme control, calibration, status with the check mark | seeded banks |
+| 2 | Empty state: serif headline, the five "Try one" rows, "How it works" aside | live API |
 | 3 | Preset A clicked, stage line advancing | live API |
 | 4 | Streamed headline appearing (let it type, do not cut) | live API |
 | 5 | Risk line close-up: `High risk 0.79` + the rule sentence | live API |
@@ -108,10 +122,14 @@ the three promoted classes.
 | 10 | Citation list: three ids, evidence counts, outcome labels | live API |
 | 11 | "also considered and declined" expanded | live API |
 | 12 | Preset C: `No precedent` + declined list | live API |
-| 13 | Preset B: hiring, `High risk 0.67`, two bad precedents | live API |
-| 14 | Ledger strip close-up | — |
+| 13 | Preset B: hiring, `High risk`, bad precedents | live API |
+| 14 | Drawer open: calibration numbers + promoted classes | — |
 | 15 | `/health` showing `laya: loaded true` (technical judges) | live API |
 | 16 | A decision typed from scratch that returns `No precedent` | live API |
+| 17 | Pill hover preview, then expanded full record | live API |
+| 18 | Toggle the theme to dark, then back to system | — |
+| 19 | Preset D: `compliance`, citing the reopened finding + its mirror | live API |
+| 20 | Preset E: `partnership`, citing the exclusivity loss + its mirror | live API |
 
 Shot 16 matters: it proves the thing is not scripted. Type a decision the corpus does not cover and let it
 refuse on camera.
@@ -169,6 +187,6 @@ Beats 0, 2, 3, 4 compressed. Same narration, cut to the streamed headline, the d
 
 ## Live demo (judges)
 
-Same three presets in the same order as the video. If a judge types their own decision: accept it. If it
+Same five presets in the same order as the video (A, B, C, D, E). If a judge types their own decision: accept it. If it
 lands in `No precedent`, say so confidently — that is the feature, not a failure. Never improvise a
 different narrative under pressure; fall back to the presets.

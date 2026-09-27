@@ -118,6 +118,8 @@ type Turn = {
   uncited?: string[];
   unverified?: string[];
   guess?: GuessBlock | null;
+  /** A follow-up in an existing thread: answered in compact prose, without repeating the whole dossier. */
+  followUp?: boolean;
   error?: string;
   busy: boolean;
 };
@@ -131,14 +133,21 @@ export default function Page() {
   const { settings, update } = useSettings();
   const [navOpen, setNavOpen] = useState(false);
   const showEvidence = settings.sourcesOpen;
+  // The most recent answer drives the drawer: a no-precedent reply has no calibration to point at.
+  const latestNoPrecedent = turns.length > 0 && !!turns[turns.length - 1].noPrecedent;
   const endRef = useRef<HTMLDivElement>(null);
   const busyRef = useRef(false);
+  const turnsRef = useRef<Turn[]>([]);
 
   useEffect(() => {
     api.prompts().then(setPresets).catch(() => {});
     api.ledger().then(setLedger).catch(() => {});
     api.health().then(setHealth).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    turnsRef.current = turns;
+  }, [turns]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -153,7 +162,13 @@ export default function Page() {
     const patch = (fn: (t: Turn) => Turn) =>
       setTurns((prev) => prev.map((t) => (t.id === id ? fn(t) : t)));
 
-    setTurns((prev) => [...prev, { id, question, status: "connecting", streamed: "", busy: true }]);
+    // The first question opens a new thread and gets the full dossier. Everything after it is a follow-up:
+    // same memory, same citations, but no repeated evidence apparatus.
+    const isFollowUp = turnsRef.current.length > 0;
+    setTurns((prev) => [
+      ...prev,
+      { id, question, status: "connecting", streamed: "", busy: true, followUp: isFollowUp },
+    ]);
 
     try {
       await streamRedflag(question, (e) => {
@@ -222,6 +237,7 @@ export default function Page() {
         onSetting={update}
         ledger={ledger}
         health={health}
+        hideCalibration={latestNoPrecedent}
       />
 
       <main className="mx-auto max-w-[1180px] px-6 pb-56">
@@ -316,76 +332,104 @@ export default function Page() {
               </div>
             )}
 
-            {showEvidence && t.domain && <LayaNote laya={t.laya ?? null} domain={t.domain} dtype={t.dtype ?? ""} />}
+            {showEvidence && t.domain && !t.noPrecedent && (
+              <LayaNote laya={t.laya ?? null} domain={t.domain} dtype={t.dtype ?? ""} />
+            )}
 
-            {/* the review */}
-            {(t.opinion?.headline || t.streamed) && (
-              <div className="mt-6 grid gap-x-12 gap-y-8 lg:grid-cols-[minmax(0,1fr)_360px]">
-                <div className="measure prose-editorial">
-                  {t.opinion?.headline ? (
-                    <>
-                      <p className="font-display !mb-4 text-[19px] leading-snug text-ink">
-                        <AnnotatedProse text={t.opinion.headline} precedents={t.precedents ?? []} />
-                      </p>
-                      {t.opinion.why && (
-                        <p className="text-[15px] leading-relaxed text-ink-soft">
-                          <AnnotatedProse text={t.opinion.why} precedents={t.precedents ?? []} />
-                        </p>
-                      )}
-                    </>
-                  ) : (
-                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-ink-soft">
-                      <AnnotatedProse text={t.streamed} precedents={t.precedents ?? []} />
-                      {t.busy && <span className="caret" />}
-                    </p>
-                  )}
-                </div>
-
-                {/* The guess is passed through the same pill-aware prose renderer so a fabricated id
-                    cannot appear as a live-looking citation. */}
-                {t.guess && <GuessPanel guess={t.guess} />}
-
-                {/* the difference: the one claim that is not a similarity search */}
-                <aside className="lg:pt-1">
-                  {t.opinion?.differentiating_detail && (
-                    <div className="fade-up border-l-2 border-accent bg-[var(--accent-wash)] px-4 py-3.5">
-                      <Label className="text-accent-deep">The difference</Label>
-                      <p className="mt-2 text-[13.5px] leading-relaxed text-ink-soft">
-                        <AnnotatedProse
-                          text={t.opinion.differentiating_detail}
-                          precedents={t.precedents ?? []}
-                        />
-                      </p>
-                    </div>
-                  )}
-                  {t.opinion?.suggested_guardrail && (
-                    <div className="mt-5">
-                      <Label>Make it safe</Label>
-                      <p className="mt-2 text-[13.5px] leading-relaxed text-ink-soft">
-                        <AnnotatedProse
-                          text={t.opinion.suggested_guardrail}
-                          precedents={t.precedents ?? []}
-                        />
-                      </p>
-                    </div>
-                  )}
-                  {t.opinion?.open_questions && t.opinion.open_questions.length > 0 && (
-                    <div className="mt-5">
-                      <Label>Confirm first</Label>
-                      <ul className="mt-2 space-y-2">
-                        {t.opinion.open_questions.map((q, i) => (
-                          <li key={i} className="flex gap-2.5 text-[13.5px] leading-relaxed text-ink-soft">
-                            <span className="mt-[7px] size-1 shrink-0 rounded-full bg-ink-faint" />
-                            <span>
-                              <AnnotatedProse text={q} precedents={t.precedents ?? []} />
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </aside>
+            {/* the review.
+                Three shapes:
+                  - no precedent: the refusal, then the guess at FULL WIDTH (a two-column grid left an empty
+                    360px rail beside it, which read as broken)
+                  - follow-up: compact prose only. Same memory and same citations, no repeated dossier
+                  - opening question: the full dossier, prose left and the apparatus at the margin
+            */}
+            {t.noPrecedent ? (
+              <>
+                <p className="measure prose-editorial mt-6 text-[15px] leading-relaxed text-ink-soft">
+                  <AnnotatedProse text={t.streamed} precedents={t.precedents ?? []} />
+                  {t.busy && <span className="caret" />}
+                </p>
+                {t.guess && (
+                  <div className="fade-up mt-7 w-full">
+                    <GuessPanel guess={t.guess} />
+                  </div>
+                )}
+              </>
+            ) : t.followUp ? (
+              <div className="mt-6 max-w-[68ch]">
+                <p className="prose-editorial text-[15px] leading-relaxed text-ink-soft">
+                  <AnnotatedProse
+                    text={t.opinion?.headline ? `${t.opinion.headline}\n\n${t.opinion.why ?? ""}` : t.streamed}
+                    precedents={t.precedents ?? []}
+                  />
+                  {t.busy && <span className="caret" />}
+                </p>
               </div>
+            ) : (
+              (t.opinion?.headline || t.streamed) && (
+                <div className="mt-6 grid gap-x-12 gap-y-8 lg:grid-cols-[minmax(0,1fr)_360px]">
+                  <div className="measure prose-editorial">
+                    {t.opinion?.headline ? (
+                      <>
+                        <p className="font-display !mb-4 text-[19px] leading-snug text-ink">
+                          <AnnotatedProse text={t.opinion.headline} precedents={t.precedents ?? []} />
+                        </p>
+                        {t.opinion.why && (
+                          <p className="text-[15px] leading-relaxed text-ink-soft">
+                            <AnnotatedProse text={t.opinion.why} precedents={t.precedents ?? []} />
+                          </p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-ink-soft">
+                        <AnnotatedProse text={t.streamed} precedents={t.precedents ?? []} />
+                        {t.busy && <span className="caret" />}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* the difference: the one claim that is not a similarity search */}
+                  <aside className="lg:pt-1">
+                    {t.opinion?.differentiating_detail && (
+                      <div className="fade-up border-l-2 border-accent bg-[var(--accent-wash)] px-4 py-3.5">
+                        <Label className="text-accent-deep">The difference</Label>
+                        <p className="mt-2 text-[13.5px] leading-relaxed text-ink-soft">
+                          <AnnotatedProse
+                            text={t.opinion.differentiating_detail}
+                            precedents={t.precedents ?? []}
+                          />
+                        </p>
+                      </div>
+                    )}
+                    {t.opinion?.suggested_guardrail && (
+                      <div className="mt-5">
+                        <Label>Make it safe</Label>
+                        <p className="mt-2 text-[13.5px] leading-relaxed text-ink-soft">
+                          <AnnotatedProse
+                            text={t.opinion.suggested_guardrail}
+                            precedents={t.precedents ?? []}
+                          />
+                        </p>
+                      </div>
+                    )}
+                    {t.opinion?.open_questions && t.opinion.open_questions.length > 0 && (
+                      <div className="mt-5">
+                        <Label>Confirm first</Label>
+                        <ul className="mt-2 space-y-2">
+                          {t.opinion.open_questions.map((q, i) => (
+                            <li key={i} className="flex gap-2.5 text-[13.5px] leading-relaxed text-ink-soft">
+                              <span className="mt-[7px] size-1 shrink-0 rounded-full bg-ink-faint" />
+                              <span>
+                                <AnnotatedProse text={q} precedents={t.precedents ?? []} />
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </aside>
+                </div>
+              )
             )}
 
             {/* sources: always visible as pills, so every claim stays attributable at a glance.

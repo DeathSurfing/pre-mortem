@@ -61,6 +61,7 @@ export function Sidebar({
   onSetting,
   ledger,
   health,
+  hideCalibration,
 }: {
   open: boolean;
   onClose: () => void;
@@ -68,6 +69,9 @@ export function Sidebar({
   onSetting: <K extends keyof Settings>(k: K, v: Settings[K]) => void;
   ledger: Ledger | null;
   health: Health | null;
+  /** Hidden on a no-precedent answer: there is no calibration to point at, so showing counts would imply
+   *  a conclusion the answer just declined to reach. */
+  hideCalibration?: boolean;
 }) {
   const la = (health?.laya ?? null) as null | { enabled?: boolean; loaded?: boolean } | undefined;
 
@@ -193,7 +197,7 @@ export function Sidebar({
             )}
 
             {/* ------------------------------------------------ ledger */}
-            {ledger && (
+            {ledger && !hideCalibration && (
               <section>
                 <Label>Calibration</Label>
                 <p className="mt-2 text-[12.5px] leading-relaxed text-ink-muted">
