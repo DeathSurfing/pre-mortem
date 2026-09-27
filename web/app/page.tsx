@@ -201,6 +201,16 @@ export default function Page() {
   }
 
   const laHealth = (health?.laya ?? null) as null | { enabled?: boolean; loaded?: boolean; error?: string | null };
+
+  /** Back to the empty state: clear the thread, the composer, and the drawer.
+   *  Scroll position is reset too, otherwise returning home drops you at the bottom of the previous thread. */
+  function goHome() {
+    setTurns([]);
+    turnsRef.current = [];
+    setInput("");
+    setNavOpen(false);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
   const empty = turns.length === 0;
 
   return (
@@ -216,9 +226,13 @@ export default function Page() {
           >
             <PanelLeft className="size-[15px]" strokeWidth={1.8} />
           </button>
-          <span className="font-display text-[17px] font-semibold tracking-tight text-ink">
+          <button
+            onClick={goHome}
+            aria-label="pre-mortem home"
+            className="font-display text-[17px] font-semibold tracking-tight text-ink transition-opacity hover:opacity-70"
+          >
             pre&#8209;mortem
-          </span>
+          </button>
           <span className="hidden text-[13px] text-ink-muted sm:inline">
             what your company already learned
           </span>

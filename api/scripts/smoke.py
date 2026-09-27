@@ -91,7 +91,9 @@ def main() -> int:
     try:
         prompts = get(f"{base}/api/biz/prompts")
         keys = {p["key"] for p in prompts}
-        check("three presets exposed", keys == {"A", "B", "C"}, str(sorted(keys)))
+        # every preset the corpus defines must be exposed AND resolvable. Assert the required ones are
+        # present rather than an exact set, so adding a preset (D, E, ...) does not fail the gate.
+        check("all presets exposed", {"A", "B", "C", "D", "E"} <= keys, str(sorted(keys)))
     except Exception as e:  # noqa: BLE001
         check("prompts reachable", False, str(e))
 
