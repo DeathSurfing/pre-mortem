@@ -13,12 +13,14 @@ import {
   type HistoryTurn,
   type GuessBlock,
   type Health,
+  type SimilarPrompt,
 } from "@/lib/api";
 import { DecisionId, Label } from "@/components/editorial";
 import { AnnotatedProse, SourceRow } from "@/components/sources";
 import { GuessPanel } from "@/components/guess";
 import { Thinking } from "@/components/reasoning";
 import { Sidebar } from "@/components/sidebar";
+import { CommitPrompt } from "@/components/commit-prompt";
 import { DEFAULT_SETTINGS, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
@@ -128,6 +130,12 @@ type Turn = {
   mode?: "decision" | "chat" | "query";
   /** The model's streamed reasoning trace, shown collapsed. */
   thinking?: string;
+  /** Cross-reference result for this prompt, from the vector store. Undefined until `prompt_recorded`. */
+  promptId?: string | null;
+  similar?: SimilarPrompt[];
+  /** Which prompt ids this thread has already committed, so a re-render does not re-ask. */
+  committedDecisionId?: string;
+  commitDismissed?: boolean;
   error?: string;
   busy: boolean;
 };
@@ -218,6 +226,8 @@ export default function Page() {
         else if (e.type === "precedents") patch((t) => ({ ...t, precedents: e.precedents, declined: e.declined }));
         else if (e.type === "delta") patch((t) => ({ ...t, streamed: t.streamed + e.text }));
         else if (e.type === "guess") patch((t) => ({ ...t, guess: e }));
+        else if (e.type === "prompt_recorded")
+          patch((t) => ({ ...t, promptId: e.id, similar: e.similar }));
         else if (e.type === "done")
           patch((t) => ({
             ...t,
@@ -253,8 +263,10 @@ export default function Page() {
 
   return (
     <div className="min-h-screen bg-paper">
-      {/* masthead */}
-      <header className="rule-b">
+      {/* masthead. Sticky so the panel toggle and the product name stay reachable on a long review,
+          which matters most on a phone where the reading column is tall. z-30 keeps it under the
+          drawer (z-50) and the composer (z-40) sits above it at the other end of the page. */}
+      <header className="rule-b sticky top-0 z-30 bg-paper/95 backdrop-blur">
         <div className="mx-auto flex max-w-[1180px] items-center gap-2 px-4 py-3 sm:gap-3 sm:px-6 sm:py-4">
           <button
             onClick={() => setNavOpen((v) => !v)}
@@ -498,6 +510,29 @@ export default function Page() {
                 The full records are behind the pill click, or revealed wholesale with "show sources". */}
             {t.mode !== "chat" && t.precedents && t.precedents.length > 0 && (
               <SourceRow precedents={t.precedents} citedIds={t.cited ?? []} />
+            )}
+
+            {/* The commit gate, plus what this prompt resembles. Rendered only once the stream has
+                recorded the prompt, and not for a follow-up (a follow-up is conversation, not a new
+                decision worth keeping). */}
+            {t.promptId !== undefined && !t.followUp && !t.busy && (
+              <CommitPrompt
+                prompt={t.question}
+                domain={t.domain}
+                decisionType={t.dtype}
+                risk={t.risk}
+                similar={t.similar ?? []}
+                committed={Boolean(t.committedDecisionId)}
+                onCommitted={(decisionId) =>
+                  setTurns((prev) =>
+                    prev.map((x) =>
+                      x.id === t.id ? { ...x, committedDecisionId: decisionId, commitDismissed: false } : x))
+                }
+                onDismiss={() =>
+                  setTurns((prev) =>
+                    prev.map((x) => (x.id === t.id ? { ...x, promptId: null, commitDismissed: true } : x)))
+                }
+              />
             )}
 
             {showEvidence && t.mode !== "chat" && (

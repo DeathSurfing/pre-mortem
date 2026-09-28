@@ -12,3 +12,8 @@ hindsight-client==0.10.1
 laya==0.3.20
 onnxruntime==1.30.0
 huggingface_hub>=0.20.0
+
+# Prompt store: every prompt run, vectorised, for cross-referencing across prompts. Separate from
+# Hindsight on purpose (a typed prompt is not company knowledge until a person commits it).
+# torch/transformers above already provide the local embedding model, so no extra ML dependency here.
+psycopg[binary]==3.2.10

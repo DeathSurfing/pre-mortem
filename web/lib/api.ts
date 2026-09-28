@@ -53,8 +53,26 @@ export type StreamEvent =
   | { type: "delta"; text: string }
   | { type: "reasoning"; text: string }
   | ({ type: "guess" } & GuessBlock)
+  /** Emitted after the answer when the prompt was recorded in the prompt store. `similar` is the
+   *  cross-reference: prior prompts that look like this one. `committed` is always false here; committing
+   *  is a separate, explicit user action (POST /api/biz/prompts/commit). */
+  | { type: "prompt_recorded"; id: string | null; embedded: boolean; similar: SimilarPrompt[] }
   | { type: "done"; opinion?: Opinion | null; engine: Record<string, unknown>; facts_used: string[]; citations_in_prose: string[]; uncited_facts?: string[]; attribution_unverified?: string[] }
   | { type: "error"; message: string };
+
+export type SimilarPrompt = {
+  id: string;
+  prompt: string;
+  domain: string | null;
+  decision_type: string | null;
+  risk: string | null;
+  committed: boolean;
+  similarity: number;
+  /** False when cosine similarity is below the cutoff. Kept visible and labelled rather than hidden, so
+   *  a first-of-its-kind prompt still shows what it was compared against. */
+  above_cutoff: boolean;
+  created_at?: string;
+};
 
 /**
  * A no-precedent guess. Deliberately a distinct shape from Opinion: the UI renders it in its own fenced
@@ -165,4 +183,26 @@ export const api = {
   prompts: () => req<PromptPreset[]>("/api/biz/prompts"),
   ledger: () => req<Ledger>("/api/biz/ledger"),
   bank: () => req<Record<string, unknown>>("/api/biz/bank"),
+};
+
+/**
+ * Prompt store. Separate from Hindsight by design: recording is automatic, committing is a human choice.
+ */
+export const promptStore = {
+  list: (limit = 20) =>
+    req<{ available: boolean; items: SimilarPrompt[]; stats: Record<string, unknown> }>(
+      `/api/biz/history?limit=${limit}`),
+  stats: () => req<Record<string, unknown>>("/api/biz/history/stats"),
+  /** Cross-reference arbitrary text without recording it. */
+  recall: (prompt: string, limit = 5) =>
+    req<{ similar: SimilarPrompt[] }>("/api/biz/history/recall", {
+      method: "POST",
+      body: JSON.stringify({ prompt, limit }),
+    }),
+  /** The one path that writes a prompt into the company knowledge base. */
+  commit: (body: { id?: string | null; prompt?: string; domain?: string | null; decision_type?: string | null; risk?: string | null }) =>
+    req<{ committed: boolean; decision_id: string }>("/api/biz/history/commit", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };

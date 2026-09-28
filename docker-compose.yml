@@ -1,7 +1,26 @@
 services:
   # Hindsight runs on Vectorize Cloud, so there is no memory container here.
   # Laya (the local System One classifier) is baked into the api image at build time, so there is no
-  # model-serving container either. Two containers total.
+  # model-serving container either. Three containers: api, web, and postgres (the prompt store).
+  postgres:
+    # pgvector is a hard requirement: the prompt store declares a `vector(384)` column, so a plain
+    # postgres image would fail at `ensure_schema` and silently disable cross-referencing.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-premortem}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-premortem}
+      POSTGRES_DB: ${POSTGRES_DB:-premortem}
+    volumes:
+      # Named volume, not a bind mount: losing this loses the prompt history, which is the point of it.
+      - promptstore:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-premortem} -d ${POSTGRES_DB:-premortem}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    # No `expose` and no domain: reachable only on the compose network, by service name.
+
   api:
     build: ./api
     environment:
@@ -10,6 +29,10 @@ services:
       HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY}
       HINDSIGHT_BANK_ID: ${HINDSIGHT_BANK_ID:-premortem}
       HINDSIGHT_BIZ_BANK_ID: ${HINDSIGHT_BIZ_BANK_ID:-bizdecisions}
+      # prompt store. Service name `postgres` resolves on the compose network.
+      PROMPT_DB_URL: ${PROMPT_DB_URL:-postgresql://premortem:premortem@postgres:5432/premortem}
+      # local embedding model for the prompt store; torch is already in the image for Laya.
+      EMBED_MODEL: ${EMBED_MODEL:-BAAI/bge-small-en-v1.5}
       # our own LLM calls (flip detail / review prose), streamed
       OPENCODE_GO_API_KEY: ${OPENCODE_GO_API_KEY}
       OPENCODE_GO_BASE_URL: ${OPENCODE_GO_BASE_URL:-https://opencode.ai/zen/go/v1}
@@ -28,6 +51,11 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
     expose:
       - "8000"
+    depends_on:
+      # Not fatal if this is slow (the store degrades gracefully), but waiting avoids every early prompt
+      # recording a failure and logs a clean startup instead.
+      postgres:
+        condition: service_healthy
     healthcheck:
       # start_period is generous on purpose: the first Laya load builds the ONNX session (~9s measured,
       # more on a cold host) and the healthcheck must not fail the container during that window.
@@ -50,3 +78,7 @@ services:
     depends_on:
       api:
         condition: service_started
+
+volumes:
+  promptstore:
+

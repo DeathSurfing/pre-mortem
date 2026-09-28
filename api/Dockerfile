@@ -21,6 +21,7 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt \
     && python -c "import fastapi, uvicorn, httpx, hindsight_client, hindsight_client_api; print('core deps ok')" \
     && python -c "import torch, onnxruntime, transformers; print('torch', torch.__version__, '| ort', onnxruntime.__version__)" \
+    && python -c "import psycopg; print('psycopg', psycopg.__version__)" \
     && python -c "from laya.onnx_agent import ONNXAgent; print('laya import ok')"
 
 # Bake the Laya weights into the image and record the exact snapshot path. Without this the first request
@@ -37,9 +38,16 @@ COPY app ./app
 COPY tests ./tests
 COPY scripts ./scripts
 
-# Point the app at the baked snapshot so no hub call happens at boot.
+# Point the app at the baked snapshot so no hub call happens at boot. Also warm the prompt-store embedder
+# at BUILD time: bge-small is a separate download from Laya, and without this the first prompt of a fresh
+# deploy eats a cold model fetch at request time.
 RUN printf '#!/bin/sh\nexport LAYA_LOCAL_DIR="$(cat /models/laya_path)"\nexec "$@"\n' > /entrypoint.sh \
-    && chmod +x /entrypoint.sh
+    && chmod +x /entrypoint.sh \
+    && python -c "\
+from transformers import AutoModel, AutoTokenizer; \
+AutoTokenizer.from_pretrained('BAAI/bge-small-en-v1.5'); \
+AutoModel.from_pretrained('BAAI/bge-small-en-v1.5'); \
+print('embedder cached')"
 
 EXPOSE 8000
 # 0.0.0.0 or Traefik cannot reach the container. One worker: the ONNX session is per-process and the int4

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from . import (bizcorpus, bizledger, bizlookalike, hindsight, laya_client, ledger, lookalike,
-               replay)
+               prompt_history, prompts, replay)
 from .config import (BIZ_DIRECTIVES, BIZ_MISSION, BIZ_RETAIN_INSTRUCTIONS, settings)
 from .corpus import ground_truth, PRESETS, PRESET_BY_KEY, corpus
 
@@ -27,6 +28,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(prompt_history.router)
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 
@@ -57,6 +59,10 @@ async def health() -> dict[str, Any]:
         "banks": {"business": s.biz_bank_id, "legacy_deploy": s.bank_id},
         "models": {"llm": s.llm_model, "fallback": s.llm_fallback_model, "min_proof": s.min_proof},
         "laya": laya_client.status(),
+        # Prompt store is local, so reporting it here cannot unroute the deployment. `error` is present
+        # only when it is unreachable; a missing store degrades cross-referencing, not the review.
+        "prompt_store": {"url_set": bool(os.getenv("PROMPT_DB_URL") or os.getenv("DATABASE_URL")),
+                         "error": prompt_history.store.error},
     }
 
 
@@ -271,6 +277,9 @@ class StreamRequest(BaseModel):
     prompt: str = ""
     preset: str | None = None
     use_ledger: bool = True
+    """Client-generated id for this browser session, used to group prompts in the history store. Optional:
+    without it the prompt is still recorded, just not grouped."""
+    session_id: str | None = None
     """Prior turns, oldest first. Presence makes this message a follow-up: it is answered conversationally
     with this context rather than reviewed from scratch."""
     history: list[Turn] = []
@@ -299,8 +308,45 @@ async def biz_redflag_stream_post(body: StreamRequest):
         yield "data: " + json.dumps({"type": "status", "message": "connected", "step": "start"}) + "\n\n"
         if promoted:
             yield "data: " + json.dumps({"type": "ledger", "promoted": sorted(promoted)}) + "\n\n"
-        async for chunk in bizlookalike.redflag_stream(text, promoted=promoted, history=history):
-            yield chunk
+
+        # Prompt history runs on the single pass below rather than as a pre-pass: a pre-pass would re-drive
+        # the whole generator and pay for classification, recall and prose twice.
+        #
+        # The prompt is recorded and vectorised; it is NOT retained. Only an explicit user commit writes to
+        # Hindsight (POST /api/biz/history/commit). Best-effort by design, so a Postgres outage can never
+        # take the review down.
+        seen: dict[str, Any] = {}
+        try:
+            async for chunk in bizlookalike.redflag_stream(text, promoted=promoted, history=history):
+                if chunk.startswith("data: "):
+                    try:
+                        event = json.loads(chunk[6:])
+                    except Exception:  # noqa: BLE001
+                        event = None
+                    if isinstance(event, dict):
+                        if event.get("type") == "classify":
+                            seen.update(domain=event.get("domain"),
+                                        decision_type=event.get("decision_type"),
+                                        mode=event.get("mode"),
+                                        confidence=(event.get("laya") or {}).get("domain_confidence"))
+                        elif event.get("type") == "verdict":
+                            seen["risk"] = event.get("risk")
+                yield chunk
+        except Exception as e:  # noqa: BLE001
+            log.warning("review stream failed: %s: %s", type(e).__name__, e)
+            yield "data: " + json.dumps({"type": "error", "message": f"{type(e).__name__}: {e}"}) + "\n\n"
+
+        # After the answer, so the popup never competes with the review and the risk reading is known.
+        # Recorded even when the review above failed: "all prompts" means all of them, and a prompt that
+        # failed to answer is still a prompt the user ran.
+        try:
+            rec = prompt_history.record_and_crossref(text, session_id=body.session_id, **seen)
+            if rec.get("available"):
+                yield "data: " + json.dumps(
+                    {"type": "prompt_recorded", "id": rec.get("recorded_id"),
+                     "embedded": rec.get("embedded"), "similar": rec.get("similar") or []}) + "\n\n"
+        except Exception as e:  # noqa: BLE001
+            log.warning("prompt history skipped: %s: %s", type(e).__name__, e)
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
