@@ -1,6 +1,8 @@
 # env
 .env
 *.env
+# next.js local overrides (never match the two patterns above; a localhost API base got staged once)
+.env*.local
 
 # python
 __pycache__/

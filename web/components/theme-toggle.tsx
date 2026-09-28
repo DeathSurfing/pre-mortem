@@ -81,7 +81,7 @@ export function ThemeChoice() {
             aria-checked={active}
             onClick={() => pick(m)}
             className={
-              "flex flex-1 items-center justify-center gap-1.5 rounded-[5px] px-2 py-1.5 text-[12px] transition-colors " +
+              "flex min-h-[40px] flex-1 items-center justify-center gap-1.5 rounded-[5px] px-2 text-[12.5px] transition-colors " +
               (active ? "bg-[var(--paper-sunk)] text-ink" : "text-ink-muted hover:text-ink")
             }
           >

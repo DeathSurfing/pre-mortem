@@ -255,12 +255,12 @@ export default function Page() {
     <div className="min-h-screen bg-paper">
       {/* masthead */}
       <header className="rule-b">
-        <div className="mx-auto flex max-w-[1180px] items-center gap-3 px-6 py-4">
+        <div className="mx-auto flex max-w-[1180px] items-center gap-2 px-4 py-3 sm:gap-3 sm:px-6 sm:py-4">
           <button
             onClick={() => setNavOpen((v) => !v)}
             aria-label={navOpen ? "Hide context panel" : "Show context panel"}
             aria-expanded={navOpen}
-            className="-ml-1 flex size-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-[var(--paper-sunk)] hover:text-ink"
+            className="-ml-1 flex size-9 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-[var(--paper-sunk)] hover:text-ink sm:size-7"
           >
             <PanelLeft className="size-[15px]" strokeWidth={1.8} />
           </button>
@@ -292,11 +292,11 @@ export default function Page() {
         hideCalibration={latestNoPrecedent}
       />
 
-      <main className="mx-auto max-w-[1180px] px-6 pb-56">
+      <main className="mx-auto max-w-[1180px] px-4 pb-40 sm:px-6 sm:pb-48">
         {empty && (
-          <div className="grid gap-12 py-14 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="grid gap-10 py-10 lg:grid-cols-[minmax(0,1fr)_360px] lg:gap-12 lg:py-14">
             <div className="measure">
-              <h1 className="font-display text-[34px] font-normal leading-[1.15] tracking-tight text-ink sm:text-[40px]">
+              <h1 className="font-display text-[30px] font-normal leading-[1.15] tracking-tight text-ink sm:text-[40px]">
                 Flag a decision before you make it.
               </h1>
               <p className="mt-5 text-[16px] leading-relaxed text-ink-soft">
@@ -353,7 +353,7 @@ export default function Page() {
         )}
 
         {turns.map((t) => (
-          <article key={t.id} className="py-11 rule-b">
+          <article key={t.id} className="py-8 rule-b sm:py-11">
             {/* the question, set as a pull quote */}
             <h2 className="measure font-display text-[22px] font-normal leading-snug text-ink sm:text-[25px]">
               {t.question}
@@ -539,7 +539,7 @@ export default function Page() {
       {/* composer */}
       <div className="fixed inset-x-0 bottom-0 border-t border-rule bg-paper/95 backdrop-blur">
         <form
-          className="mx-auto flex max-w-[1180px] items-end gap-3 px-6 py-4"
+          className="mx-auto flex max-w-[1180px] items-end gap-2 px-4 py-3 sm:gap-3 sm:px-6 sm:py-4"
           onSubmit={(e) => {
             e.preventDefault();
             ask(input);
@@ -556,7 +556,10 @@ export default function Page() {
             }}
             placeholder="Describe a decision you are considering…"
             rows={1}
-            className="max-h-40 min-h-[46px] flex-1 resize-none rounded-md border border-[var(--rule-strong)] bg-paper-raised px-3.5 py-3 text-[15px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
+            // `min-w-0` is load-bearing: a flex item's automatic minimum size is its content width, and a
+            // textarea's is its `cols` default, so without this it refused to shrink and pushed the whole
+            // page 138px wider than a 390px viewport.
+            className="max-h-40 min-h-[46px] min-w-0 flex-1 resize-none rounded-md border border-[var(--rule-strong)] bg-paper-raised px-3.5 py-3 text-[15px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
           />
           <button
             type="submit"

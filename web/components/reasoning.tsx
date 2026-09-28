@@ -20,7 +20,7 @@ export function Thinking({ text, busy }: { text: string; busy?: boolean }) {
       <button
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="group inline-flex items-center gap-2 text-[12px] text-ink-faint transition-colors hover:text-ink-muted"
+        className="group inline-flex min-h-[32px] items-center gap-2 text-[12.5px] text-ink-faint transition-colors hover:text-ink-muted"
       >
         <ChevronRight
           className={cn("size-[12px] transition-transform", open && "rotate-90")}

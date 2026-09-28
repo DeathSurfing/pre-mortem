@@ -82,14 +82,16 @@ export function Sidebar({
         <div
           onClick={onClose}
           aria-hidden="true"
-          className="fixed inset-0 z-40 bg-black/10 backdrop-blur-[1px] lg:bg-black/0 lg:backdrop-blur-0"
+          className="fixed inset-0 z-40 bg-black/25 backdrop-blur-[1px] lg:bg-black/0 lg:backdrop-blur-0"
         />
       )}
 
       <aside
         aria-hidden={!open}
         className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-[292px] flex-col border-r border-rule bg-paper",
+          // Full width on a phone (a 292px drawer on a 390px screen leaves an unreadable 98px sliver of
+          // body text, which reads as a rendering bug rather than as a drawer), 320px from `sm` up.
+          "fixed inset-y-0 left-0 z-50 flex w-full flex-col border-r border-rule bg-paper sm:w-[320px]",
           "transition-transform duration-200 ease-out",
           open ? "translate-x-0" : "-translate-x-full",
         )}
@@ -101,14 +103,19 @@ export function Sidebar({
           <button
             onClick={onClose}
             aria-label="Close panel"
-            className="ml-auto flex size-7 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-[var(--paper-sunk)] hover:text-ink"
+            className="ml-auto flex size-9 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-[var(--paper-sunk)] hover:text-ink"
           >
             <ChevronLeft className="size-[15px]" strokeWidth={1.8} />
           </button>
         </div>
 
-        {/* one scroll region, with consistent rhythm via space-y on the sections */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">
+        {/* one scroll region, with consistent rhythm via space-y on the sections. The bottom padding is
+            safe-area aware: flush to the edge, the last calibration line was clipped at the viewport bottom
+            and the closing rows sat under the phone's home indicator. */}
+        <div
+          className="min-h-0 flex-1 overflow-y-auto px-5 py-5"
+          style={{ paddingBottom: "max(20px, env(safe-area-inset-bottom))" }}
+        >
           <div className="space-y-7">
             {/* ------------------------------------------------ appearance */}
             <section>
@@ -142,7 +149,9 @@ export function Sidebar({
                       key={d}
                       onClick={() => onSetting("density", d)}
                       className={cn(
-                        "rounded-[5px] px-2.5 py-1 text-[12px] capitalize transition-colors",
+                        // 40px minimum height: these were 27px, under the 44px touch guideline and easy to
+                        // miss on a phone.
+                        "min-h-[40px] rounded-[5px] px-4 text-[12.5px] capitalize transition-colors",
                         settings.density === d
                           ? "bg-[var(--paper-sunk)] text-ink"
                           : "text-ink-muted hover:text-ink",
@@ -233,7 +242,7 @@ export function Sidebar({
                 {ledger.rows?.length > 0 && (
                   <details className="mt-4">
                     <summary className="cursor-pointer text-[12px] text-ink-faint hover:text-ink-muted">
-                      the {ledger.rows.length} decisions
+                      the {ledger.rows.length} {ledger.rows.length === 1 ? "decision" : "decisions"}
                     </summary>
                     <ul className="mt-3 space-y-3">
                       {ledger.rows.map((r) => (
