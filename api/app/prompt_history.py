@@ -42,6 +42,110 @@ class CommitBody(BaseModel):
     domain: str | None = None
     decision_type: str | None = None
     risk: str | None = None
+    # Set once the user has reviewed the draft. Absent means "just draft it".
+    draft: DecisionDraft | None = None
+
+
+class DecisionDraft(BaseModel):
+    """The editable shape of a decision the user is adding. One field per corpus field."""
+    decision: str = ""
+    rationale: str = ""
+    result: str = ""
+    lesson: str = ""
+    outcome: str = ""          # "" | good | mixed | bad
+    owner: str = ""
+    scale: str = ""
+    context: str = ""
+    domain: str = ""
+    decision_type: str = ""
+
+
+class DraftBody(BaseModel):
+    prompt: str
+    domain: str | None = None
+    decision_type: str | None = None
+    risk: str | None = None
+    headline: str | None = None
+
+
+# The taxonomy the seeded corpus uses. Constrained on purpose: an off-vocabulary domain would still be
+# retained, but it could never match a corpus record in lookalike, so the new decision would be
+# unretrievable in practice. See bizcorpus for the source of truth.
+_DOMAINS = ["pricing", "hiring", "vendor", "marketing", "launch", "buildvsbuy", "compliance",
+            "security", "partnership", "ops"]
+_TYPES = ["discount", "packaging", "price-increase", "renewal", "vendor-switch", "senior-hire",
+          "backfill", "contractor-conversion", "budget-shift", "channel-test", "feature-ga", "build",
+          "buy", "audit-finding", "incident-response", "reseller-agreement", "datacenter-region"]
+
+# Drafting is explicitly forbidden from inventing a result or an outcome. A decision still being weighed
+# has neither, and a fabricated one would put a false precedent into the store the product cites.
+DRAFT_SYSTEM = (
+    "You turn a business-decision review into a storable decision record. You are given the decision and "
+    "the review the tool already produced about it.\n\n"
+    "Rules, all absolute:\n"
+    "1. Never invent a result, an outcome, a number, or a date. If the decision has not been carried out "
+    "yet, or no result is known, leave `result` as an empty string and `outcome` as an empty string. That "
+    "is the expected and correct answer for a decision the user is still considering.\n"
+    "2. `outcome` MUST be \"\" unless the provided text states what actually happened. Allowed non-empty "
+    "values are exactly: good, mixed, bad. Never guess between them.\n"
+    "3. Fill only from the given text. Do not add outside knowledge, market context, or plausible detail.\n"
+    "4. `decision` is one sentence: what is being decided, in the third person, past or present tense as "
+    "the text supports.\n"
+    "5. `rationale` is why, taken from the review or the user's wording. Empty if the text gives none.\n"
+    "6. `lesson` only if the text records a lesson. Otherwise empty.\n"
+    "7. `domain` and `decision_type` MUST be chosen from the provided lists, or left empty. Never invent "
+    "a new one, and never use a value outside the list.\n"
+    "8. `owner`, `scale` and `context` are empty unless the text states them.\n\n"
+    "Return JSON with exactly these keys: decision, rationale, result, lesson, outcome, owner, scale, "
+    "context, domain, decision_type."
+)
+
+
+async def draft_decision(*, prompt: str, domain: str | None, decision_type: str | None,
+                         risk: str | None, headline: str | None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Draft a decision record from the review, for the user to edit before adding.
+
+    Returns (draft, meta). The draft is always a complete, usable shape: if the model is unavailable the
+    caller still gets the decision text, so the user can fill it in rather than being blocked.
+    """
+    from . import llm
+
+    fallback = {"decision": prompt.strip(), "rationale": "", "result": "", "lesson": "", "outcome": "",
+                "owner": "", "scale": "", "context": "", "domain": domain or "",
+                "decision_type": decision_type or ""}
+    if not headline and not prompt.strip():
+        return fallback, {"drafted": False, "reason": "nothing to draft from"}
+
+    user = (
+        f"The decision under review (the user's own words):\n{prompt.strip()}\n\n"
+        f"The tool classified it as: domain={domain or 'unknown'}, type={decision_type or 'unknown'}, "
+        f"risk={risk or 'unknown'}.\n\n"
+        f"The review's headline: {headline or '(none produced)'}\n\n"
+        f"Allowed domain values: {', '.join(_DOMAINS)}\n"
+        f"Allowed decision_type values: {', '.join(_TYPES)}\n"
+    )
+    parsed, meta = await llm.chat_json(DRAFT_SYSTEM, user, max_tokens=1200)
+    if not parsed:
+        return fallback, {**meta, "drafted": False}
+
+    out = dict(fallback)
+    for k in out:
+        v = parsed.get(k)
+        if isinstance(v, str):
+            out[k] = v.strip()
+    # Guard the two fields where a model error is expensive: an invented outcome, or a label outside the
+    # taxonomy that would make the record unretrievable.
+    if out["outcome"].lower() not in ("good", "mixed", "bad"):
+        out["outcome"] = ""
+    else:
+        out["outcome"] = out["outcome"].lower()
+    if out["domain"] not in _DOMAINS:
+        out["domain"] = domain if domain in _DOMAINS else ""
+    if out["decision_type"] not in _TYPES:
+        out["decision_type"] = decision_type or ""
+    if not out["decision"].strip():
+        out["decision"] = prompt.strip()
+    return out, {**meta, "drafted": True}
 
 
 def record_and_crossref(text: str, *, domain: str | None, decision_type: str | None,
@@ -99,12 +203,34 @@ async def recall(body: RecallBody) -> dict[str, Any]:
     return {"similar": store.similar(vector, limit=body.limit, exclude_id=body.exclude_id)}
 
 
+@router.post("/draft")
+async def draft(body: DraftBody) -> dict[str, Any]:
+    """Draft a decision record from the review, for the user to edit before adding.
+
+    Always returns a complete, usable draft. If the model is unavailable the decision text is filled from
+    the user's own words and the rest is empty, so the user can type it in rather than being blocked.
+    """
+    d, meta = await draft_decision(prompt=body.prompt, domain=body.domain,
+                                   decision_type=body.decision_type, risk=body.risk,
+                                   headline=body.headline)
+    return {"draft": d, "drafted": bool(meta.get("drafted")),
+            "domains": _DOMAINS, "decision_types": _TYPES,
+            "note": ("Filled from the review. Anything the review did not state is left blank on purpose: a "
+                     "decision that has not been carried out yet has no result, and inventing one would put "
+                     "a false precedent into the history this tool cites.")}
+
+
 @router.post("/commit")
 async def commit(body: CommitBody) -> dict[str, Any]:
-    """The gate. Only here does a prompt enter the company's knowledge base, and only on a human yes.
+    """The gate. Only here does a decision enter the company's knowledge base, and only on a human yes.
 
-    Retains to Hindsight as a decision record (not a chat log), then marks the row committed with the
-    Hindsight document id so the two can be reconciled later.
+    Two shapes, both landing in Hindsight as a decision record rather than a chat log:
+
+    - with `draft`: the user has filled in / edited the decision record, and that is what is stored. This is
+      the "add this decision" path, and it captures the summary, rationale, result and lesson.
+    - without `draft`: the older, thinner path, which stores the prompt as a decision record.
+
+    Either way the outcome is only recorded if the user asserted one. Nothing here infers a result.
     """
     if not body.id and not body.prompt:
         raise HTTPException(422, "provide an id or a prompt")
@@ -119,21 +245,35 @@ async def commit(body: CommitBody) -> dict[str, Any]:
             raise HTTPException(404, f"unknown prompt id {body.id}")
 
     text = body.prompt or (row or {}).get("prompt") or ""
-    if not text.strip():
-        raise HTTPException(422, "the prompt to commit is empty")
-
     domain = body.domain or (row or {}).get("domain")
     dtype = body.decision_type or (row or {}).get("decision_type")
     risk = body.risk or (row or {}).get("risk")
 
-    decision_id, doc = ps.commit_document_text(text, domain=domain, decision_type=dtype, risk=risk)
+    if body.draft is not None:
+        d = body.draft
+        if not d.decision.strip():
+            raise HTTPException(422, "the decision text is empty")
+        decision_id, doc = ps.decision_document_text(
+            decision=d.decision.strip(),
+            domain=(d.domain or domain),
+            decision_type=(d.decision_type or dtype),
+            rationale=d.rationale, result=d.result, lesson=d.lesson, outcome=d.outcome,
+            owner=d.owner, scale=d.scale, context=d.context,
+            source_prompt=text or None,
+        )
+        context = "user-added business decision"
+    else:
+        if not text.strip():
+            raise HTTPException(422, "the prompt to commit is empty")
+        decision_id, doc = ps.commit_document_text(text, domain=domain, decision_type=dtype, risk=risk)
+        context = "user-committed business decision"
 
     # Import here, not at module scope: keeps this router importable without a Hindsight key.
     from . import config, hindsight
     try:
         r = await hindsight.client().aretain_batch(
             bank_id=config.settings().biz_bank_id,
-            items=[{"content": doc["text"], "context": "user-committed business decision",
+            items=[{"content": doc["text"], "context": context,
                     "timestamp": None, "document_id": decision_id, "metadata": doc["metadata"]}],
             retain_async=False,
         )
@@ -145,4 +285,5 @@ async def commit(body: CommitBody) -> dict[str, Any]:
         store.commit(body.id, decision_id)
 
     return {"committed": True, "decision_id": decision_id, "metadata": doc["metadata"],
+            "outcome_recorded": bool(body.draft and body.draft.outcome),
             "hindsight": str(r)[:200]}

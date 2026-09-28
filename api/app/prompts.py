@@ -317,5 +317,70 @@ def commit_document_text(prompt: str, *, domain: str | None, decision_type: str 
     return did, {"text": body, "metadata": {k: str(v) for k, v in meta.items()}}
 
 
+def decision_document_text(
+    *,
+    decision: str,
+    domain: str | None,
+    decision_type: str | None,
+    rationale: str | None = None,
+    result: str | None = None,
+    lesson: str | None = None,
+    outcome: str | None = None,
+    owner: str | None = None,
+    scale: str | None = None,
+    context: str | None = None,
+    source_prompt: str | None = None,
+    created_at: datetime | None = None,
+) -> tuple[str, dict[str, Any]]:
+    """The document text Hindsight receives when a user adds a decision.
+
+    Mirrors the shape of the seeded corpus records (`bizcorpus.Decision.text`) so a user-added decision is
+    retrievable on the same terms as a seeded one: area, date, owner, amount, context, decision, rationale,
+    result, lesson. Hindsight's extraction prompt looks for exactly those, so a differently shaped document
+    extracts worse facts.
+
+    `outcome` is written as "not-recorded" when unknown, and the body says so in words. A decision the user
+    is still weighing has no result, and inventing one would put a fabricated precedent into the very store
+    the product cites. `rank.verdict` already treats a missing outcome as neither good nor bad, so an
+    unresolved record can support a review but can never inflate or deflate risk.
+    """
+    ts = (created_at or datetime.now(timezone.utc)).date().isoformat()
+    did = f"U-{ts}-{uuid.uuid4().hex[:6]}"
+    parts = [
+        f"Business decision {did} | {domain or 'unclassified'} | {decision_type or 'unclassified'}",
+        f"Recorded by the user on: {ts}",
+    ]
+    if owner:
+        parts.append(f"Owner: {owner}")
+    if scale:
+        parts.append(f"Amount at stake: {scale}")
+    if context:
+        parts.append(f"Context at the time: {context}")
+    if source_prompt:
+        parts.append(f"If it were a review question, it would read: {source_prompt}")
+    parts.append(f"Decision: {decision}")
+    parts.append(f"Rationale at the time: {rationale or 'not recorded'}")
+    # The result is not knowable yet in the common case, and saying so is the honest record.
+    parts.append(f"Result: {result or 'not yet known; this decision had not been carried out when recorded'}")
+    if lesson:
+        parts.append(f"Lesson recorded: {lesson}")
+    if not outcome:
+        parts.append(
+            "Note: no outcome is recorded for this decision yet. Do not treat it as having gone well or "
+            "badly. It is context, not evidence of a result."
+        )
+    meta = {
+        "decision_id": did,
+        "source": "user_added",
+        "domain": domain or "unclassified",
+        "decision_type": decision_type or "unclassified",
+        "outcome": outcome or "not-recorded",
+        "owner": owner or "",
+        "scale": scale or "",
+        "date": ts,
+    }
+    return did, {"text": "\n".join(parts), "metadata": {k: str(v) for k, v in meta.items()}}
+
+
 def dumps(obj: Any) -> str:
     return json.dumps(obj, default=str)

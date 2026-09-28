@@ -21,6 +21,7 @@ import { GuessPanel } from "@/components/guess";
 import { Thinking } from "@/components/reasoning";
 import { Sidebar } from "@/components/sidebar";
 import { CommitPrompt } from "@/components/commit-prompt";
+import { AddDecision } from "@/components/add-decision";
 import { DEFAULT_SETTINGS, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
@@ -136,6 +137,10 @@ type Turn = {
   /** Which prompt ids this thread has already committed, so a re-render does not re-ask. */
   committedDecisionId?: string;
   commitDismissed?: boolean;
+  /** True while the add-decision sheet is open for this turn. */
+  adding?: boolean;
+  /** The decision id returned after a successful add. */
+  addedDecisionId?: string;
   error?: string;
   busy: boolean;
 };
@@ -512,10 +517,11 @@ export default function Page() {
               <SourceRow precedents={t.precedents} citedIds={t.cited ?? []} />
             )}
 
-            {/* The commit gate, plus what this prompt resembles. Rendered only once the stream has
-                recorded the prompt, and not for a follow-up (a follow-up is conversation, not a new
-                decision worth keeping). */}
-            {t.promptId !== undefined && !t.followUp && !t.busy && (
+            {/* The commit gate, plus what this prompt resembles.
+                "Add a decision" is offered only where the message proposes a decision to judge
+                (`t.mode === "decision"`): a greeting or a history question is not a decision the company
+                made, and offering to store it as one would fill the history with noise. */}
+            {t.promptId !== undefined && !t.followUp && !t.busy && t.mode === "decision" && (
               <CommitPrompt
                 prompt={t.question}
                 domain={t.domain}
@@ -523,16 +529,34 @@ export default function Page() {
                 risk={t.risk}
                 similar={t.similar ?? []}
                 committed={Boolean(t.committedDecisionId)}
-                onCommitted={(decisionId) =>
+                onAdd={() => setTurns((prev) => prev.map((x) => (x.id === t.id ? { ...x, adding: true } : x)))}
+                onDismiss={() => setTurns((prev) => prev.map((x) => (x.id === t.id ? { ...x, promptId: null, commitDismissed: true } : x)))}
+              />
+            )}
+
+            {/* The decision capture sheet. A portal-free fixed overlay, rendered per turn, so it is tied to
+                the review it came from. */}
+            {t.adding && (
+              <AddDecision
+                prompt={t.question}
+                promptId={t.promptId}
+                domain={t.domain}
+                decisionType={t.dtype}
+                risk={t.risk}
+                headline={t.opinion?.headline ?? undefined}
+                onClose={() => setTurns((prev) => prev.map((x) => (x.id === t.id ? { ...x, adding: false } : x)))}
+                onAdded={(decisionId) =>
                   setTurns((prev) =>
-                    prev.map((x) =>
-                      x.id === t.id ? { ...x, committedDecisionId: decisionId, commitDismissed: false } : x))
-                }
-                onDismiss={() =>
-                  setTurns((prev) =>
-                    prev.map((x) => (x.id === t.id ? { ...x, promptId: null, commitDismissed: true } : x)))
+                    prev.map((x) => (x.id === t.id ? { ...x, adding: false, addedDecisionId: decisionId } : x)))
                 }
               />
+            )}
+
+            {t.addedDecisionId && (
+              <p className="mt-4 border-l-2 border-risk-low bg-[var(--risk-low-wash)] px-4 py-3 text-[13px] text-ink-soft">
+                Added to the history as <span className="font-mono text-[12px]">{t.addedDecisionId}</span>.
+                Future reviews can recall and cite it.
+              </p>
             )}
 
             {showEvidence && t.mode !== "chat" && (
@@ -590,7 +614,10 @@ export default function Page() {
               }
             }}
             placeholder="Describe a decision you are considering…"
-            rows={1}
+            // rows=2, not 1: the placeholder wraps to two lines in a 304px field at 390px width, and with a
+            // single row the box was 48px tall against content that needed 72px, so the second line was
+            // clipped AND `overflow-y: auto` drew a stray scrollbar inside the field.
+            rows={2}
             // `min-w-0` is load-bearing: a flex item's automatic minimum size is its content width, and a
             // textarea's is its `cols` default, so without this it refused to shrink and pushed the whole
             // page 138px wider than a 390px viewport.

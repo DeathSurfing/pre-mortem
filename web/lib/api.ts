@@ -60,6 +60,20 @@ export type StreamEvent =
   | { type: "done"; opinion?: Opinion | null; engine: Record<string, unknown>; facts_used: string[]; citations_in_prose: string[]; uncited_facts?: string[]; attribution_unverified?: string[] }
   | { type: "error"; message: string };
 
+export type DecisionDraft = {
+  decision: string;
+  rationale: string;
+  result: string;
+  lesson: string;
+  /** "" when the outcome is not known. Allowed non-empty: good | mixed | bad. Never inferred. */
+  outcome: string;
+  owner: string;
+  scale: string;
+  context: string;
+  domain: string;
+  decision_type: string;
+};
+
 export type SimilarPrompt = {
   id: string;
   prompt: string;
@@ -199,9 +213,21 @@ export const promptStore = {
       method: "POST",
       body: JSON.stringify({ prompt, limit }),
     }),
-  /** The one path that writes a prompt into the company knowledge base. */
-  commit: (body: { id?: string | null; prompt?: string; domain?: string | null; decision_type?: string | null; risk?: string | null }) =>
-    req<{ committed: boolean; decision_id: string }>("/api/biz/history/commit", {
+  /** Draft a decision record from the review, for the user to edit before adding. */
+  draft: (body: { prompt: string; domain?: string | null; decision_type?: string | null; risk?: string | null; headline?: string | null }) =>
+    req<{ draft: DecisionDraft; drafted: boolean; domains: string[]; decision_types: string[]; note: string }>(
+      "/api/biz/history/draft", { method: "POST", body: JSON.stringify(body) }),
+  /** The one path that writes a decision into the company knowledge base. */
+  commit: (body: {
+    id?: string | null;
+    prompt?: string;
+    domain?: string | null;
+    decision_type?: string | null;
+    risk?: string | null;
+    /** Present when the user filled in / edited the record. Absent stores the thinner prompt-only record. */
+    draft?: DecisionDraft;
+  }) =>
+    req<{ committed: boolean; decision_id: string; outcome_recorded?: boolean }>("/api/biz/history/commit", {
       method: "POST",
       body: JSON.stringify(body),
     }),
