@@ -180,6 +180,11 @@ export default function Page() {
   }, [turns]);
 
   useEffect(() => {
+    // Only follow the page while an answer is actually being written, and only for the turn that is
+    // streaming. Previously this fired on every `turns` change, so dismissing the add-decision panel (or
+    // opening it, or committing) yanked the viewport to the bottom of the page.
+    const live = turns[turns.length - 1];
+    if (!live || (!live.busy && !live.streamed)) return;
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [turns]);
 
@@ -582,7 +587,9 @@ export default function Page() {
                 "Add a decision" is offered only where the message proposes a decision to judge
                 (`t.mode === "decision"`): a greeting or a history question is not a decision the company
                 made, and offering to store it as one would fill the history with noise. */}
-            {t.promptId !== undefined && !t.followUp && !t.busy && t.mode === "decision" && (
+            {/* `!t.commitDismissed` is load-bearing: dismissal sets promptId to null, and `null !== undefined`
+                is true, so the guard alone would never hide the panel. */}
+            {t.promptId !== undefined && !t.commitDismissed && !t.followUp && !t.busy && t.mode === "decision" && (
               <CommitPrompt
                 prompt={t.question}
                 domain={t.domain}
