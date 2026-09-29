@@ -1,5 +1,8 @@
 # pre-mortem
 
+**[Live demo: premortem.lexcontra.com](https://premortem.lexcontra.com/)** — open it and try one of the
+preset decisions, or type your own.
+
 > A chatbot that turns into a reviewer the moment you put a decision to it.
 
 Describe a decision you are considering, in plain English. The agent searches what your organisation has
@@ -12,6 +15,11 @@ turned out, it can count as evidence rather than merely as context.
 
 Built for the *AI Agents That Learn Using Hindsight* hackathon. Memory layer: [Hindsight](https://hindsight.vectorize.io/).
 Local classification: [Laya](https://huggingface.co/convaiinnovations/laya). Prompt store: Postgres + pgvector.
+
+| | |
+|---|---|
+| Live demo | https://premortem.lexcontra.com/ |
+| API | https://premortem-api.lexcontra.com/ (`GET /health`) |
 
 ---
 
