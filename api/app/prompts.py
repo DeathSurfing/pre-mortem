@@ -57,6 +57,20 @@ CREATE INDEX IF NOT EXISTS prompts_embedding_idx ON prompts
     USING hnsw (embedding vector_cosine_ops);
 """
 
+# Added after the first deploy, so these run as idempotent migrations against an existing table rather than
+# living only in CREATE TABLE. A committed decision is the thing that needs to be resolvable later:
+# `outcome` NULL means "committed, but we do not yet know how it turned out", which is the state every
+# added decision starts in and the one the product must eventually close the loop on.
+MIGRATIONS = """
+ALTER TABLE prompts ADD COLUMN IF NOT EXISTS outcome text;
+ALTER TABLE prompts ADD COLUMN IF NOT EXISTS result_note text;
+ALTER TABLE prompts ADD COLUMN IF NOT EXISTS resolved_at timestamptz;
+ALTER TABLE prompts ADD COLUMN IF NOT EXISTS origin text;
+-- the unresolved queue is read on every review, so index the predicate it filters on
+CREATE INDEX IF NOT EXISTS prompts_unresolved_idx ON prompts (committed, resolved_at)
+    WHERE committed AND resolved_at IS NULL;
+"""
+
 _COSINE_CUTOFF = float(os.getenv("PROMPT_SIM_CUTOFF", "0.35"))
 
 
@@ -89,6 +103,7 @@ class PromptStore:
                 with self._connect() as conn, conn.cursor() as cur:
                     cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
                     cur.execute(SCHEMA)
+                    cur.execute(MIGRATIONS)
                 self._schema_ready = True
                 self.error = None
                 return True
@@ -171,6 +186,75 @@ class PromptStore:
                 elif isinstance(v, (datetime, date)):
                     r[k] = v.isoformat()
         return rows
+
+    def get(self, prompt_id: str) -> dict[str, Any] | None:
+        """One row by id.
+
+        A direct lookup, not a scan: the commit path used `recent(limit=500)` and filtered in Python, which
+        silently 404s once the store grows past the window.
+        """
+        if not self.ensure_schema():
+            return None
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """select id, prompt, domain, decision_type, mode, risk, confidence, committed,
+                              hindsight_doc, outcome, result_note, resolved_at, created_at,
+                              (embedding is not null) as has_vector
+                       from prompts where id = %s::uuid""", (prompt_id,))
+                cols = [c.name for c in cur.description]
+                row = cur.fetchone()
+                return self._jsonable([dict(zip(cols, row))])[0] if row else None
+        except Exception as e:  # noqa: BLE001
+            self.error = f"{type(e).__name__}: {e}"
+            log.warning("prompt get failed: %s", self.error)
+            return None
+
+    def unresolved(self, limit: int = 5, *, domain: str | None = None) -> list[dict[str, Any]]:
+        """Committed decisions whose outcome is still unknown, newest first.
+
+        These are the records that can never become evidence until someone says how they turned out. The
+        review surfaces them so the loop closes, rather than leaving them permanently result-less.
+        """
+        if not self.ensure_schema():
+            return []
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                # Same domain first, then the rest: a decision in the same area is the one the user is most
+                # likely to know the answer to.
+                cur.execute(
+                    """select id, prompt, domain, decision_type, outcome, created_at, hindsight_doc
+                       from prompts
+                       where committed and resolved_at is null
+                       order by (domain is not distinct from %s) desc, created_at desc
+                       limit %s""", (domain, limit))
+                cols = [c.name for c in cur.description]
+                return self._jsonable([dict(zip(cols, r)) for r in cur.fetchall()])
+        except Exception as e:  # noqa: BLE001
+            self.error = f"{type(e).__name__}: {e}"
+            return []
+
+    def resolve(self, prompt_id: str, *, outcome: str, result_note: str | None = None) -> bool:
+        """Record what actually happened to a committed decision.
+
+        `resolved_at` is the marker that takes it out of the unresolved queue. Separate from `committed`
+        because a decision can be in the history and still have no known outcome; conflating the two is what
+        leaves records permanently read-only.
+        """
+        if not self.ensure_schema():
+            return False
+        try:
+            with self._connect() as conn, conn.cursor() as cur:
+                cur.execute(
+                    """update prompts
+                       set outcome = %s, result_note = %s, resolved_at = now()
+                       where id = %s::uuid and committed""",
+                    (outcome, result_note, prompt_id))
+                return cur.rowcount > 0
+        except Exception as e:  # noqa: BLE001
+            self.error = f"{type(e).__name__}: {e}"
+            log.warning("prompt resolve failed: %s", self.error)
+            return False
 
     def recent(self, limit: int = 20) -> list[dict[str, Any]]:
         if not self.ensure_schema():
@@ -331,21 +415,17 @@ def decision_document_text(
     context: str | None = None,
     source_prompt: str | None = None,
     created_at: datetime | None = None,
+    decision_id: str | None = None,
+    resolved_at: datetime | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """The document text Hindsight receives when a user adds a decision.
+    """The document text Hindsight receives for a user-added decision.
 
-    Mirrors the shape of the seeded corpus records (`bizcorpus.Decision.text`) so a user-added decision is
-    retrievable on the same terms as a seeded one: area, date, owner, amount, context, decision, rationale,
-    result, lesson. Hindsight's extraction prompt looks for exactly those, so a differently shaped document
-    extracts worse facts.
-
-    `outcome` is written as "not-recorded" when unknown, and the body says so in words. A decision the user
-    is still weighing has no result, and inventing one would put a fabricated precedent into the very store
-    the product cites. `rank.verdict` already treats a missing outcome as neither good nor bad, so an
-    unresolved record can support a review but can never inflate or deflate risk.
+    Reused for the resolve path, passing the original `decision_id`: re-retaining with the same
+    document_id SUPERSEDES the earlier document rather than adding a second one (measured: two retains,
+    one document). That is what makes closing the loop safe instead of duplicating the precedent.
     """
     ts = (created_at or datetime.now(timezone.utc)).date().isoformat()
-    did = f"U-{ts}-{uuid.uuid4().hex[:6]}"
+    did = decision_id or f"U-{ts}-{uuid.uuid4().hex[:6]}"
     parts = [
         f"Business decision {did} | {domain or 'unclassified'} | {decision_type or 'unclassified'}",
         f"Recorded by the user on: {ts}",
@@ -360,11 +440,18 @@ def decision_document_text(
         parts.append(f"If it were a review question, it would read: {source_prompt}")
     parts.append(f"Decision: {decision}")
     parts.append(f"Rationale at the time: {rationale or 'not recorded'}")
-    # The result is not knowable yet in the common case, and saying so is the honest record.
+    # The result is not knowable at record time in the common case, and saying so is the honest record.
     parts.append(f"Result: {result or 'not yet known; this decision had not been carried out when recorded'}")
     if lesson:
         parts.append(f"Lesson recorded: {lesson}")
-    if not outcome:
+    if resolved_at is not None:
+        # Distinguishes a decision that has been followed up from one that was only ever recorded, so a
+        # reader is not left guessing whether silence means "fine" or "nobody checked".
+        parts.append(
+            f"Outcome recorded on: {resolved_at.date().isoformat()}. The company followed this decision up "
+            f"and recorded the result above."
+        )
+    elif not outcome:
         parts.append(
             "Note: no outcome is recorded for this decision yet. Do not treat it as having gone well or "
             "badly. It is context, not evidence of a result."
@@ -379,6 +466,8 @@ def decision_document_text(
         "scale": scale or "",
         "date": ts,
     }
+    if resolved_at is not None:
+        meta["outcome_recorded_on"] = resolved_at.date().isoformat()
     return did, {"text": "\n".join(parts), "metadata": {k: str(v) for k, v in meta.items()}}
 
 

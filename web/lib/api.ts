@@ -226,9 +226,27 @@ export const promptStore = {
     risk?: string | null;
     /** Present when the user filled in / edited the record. Absent stores the thinner prompt-only record. */
     draft?: DecisionDraft;
+    /** Set after the user has seen a duplicate warning and chosen to add it anyway. */
+    confirm_duplicate?: boolean;
   }) =>
-    req<{ committed: boolean; decision_id: string; outcome_recorded?: boolean }>("/api/biz/history/commit", {
+    req<{ committed: boolean; decision_id: string; outcome_recorded?: boolean; already?: boolean }>(
+      "/api/biz/history/commit", { method: "POST", body: JSON.stringify(body) }),
+  /** Committed decisions whose outcome nobody has recorded yet. */
+  unresolved: (limit = 5, domain?: string) =>
+    req<{ items: UnresolvedDecision[] }>(
+      `/api/biz/history/unresolved?limit=${limit}${domain ? `&domain=${encodeURIComponent(domain)}` : ""}`),
+  /** Close the loop: record what actually happened to a decision already in the history. */
+  resolveDecision: (body: { id: string; outcome: string; result?: string; lesson?: string }) =>
+    req<{ resolved: boolean; decision_id: string; outcome: string }>("/api/biz/history/resolve", {
       method: "POST",
       body: JSON.stringify(body),
     }),
+};
+
+export type UnresolvedDecision = {
+  id: string;
+  prompt: string;
+  domain: string | null;
+  decision_type: string | null;
+  created_at?: string;
 };

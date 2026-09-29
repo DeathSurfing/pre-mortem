@@ -1,10 +1,12 @@
 "use client";
 import { Activity, BookOpen, Check, ChevronLeft, SlidersHorizontal } from "lucide-react";
 import type { Health, Ledger } from "@/lib/api";
+import type { UnresolvedDecision } from "@/lib/api";
 import type { Density, Settings } from "@/lib/settings";
 import { DecisionId, Label } from "@/components/editorial";
 import { cn } from "@/lib/utils";
 import { ThemeChoice } from "@/components/theme-toggle";
+import { ResolveDecisions } from "@/components/resolve-decisions";
 
 /** A labelled on/off switch, styled to the brand rather than as a generic checkbox. */
 function Toggle({
@@ -62,6 +64,9 @@ export function Sidebar({
   ledger,
   health,
   hideCalibration,
+  unresolved,
+  onResolved,
+  onDismissUnresolved,
 }: {
   open: boolean;
   onClose: () => void;
@@ -69,6 +74,12 @@ export function Sidebar({
   onSetting: <K extends keyof Settings>(k: K, v: Settings[K]) => void;
   ledger: Ledger | null;
   health: Health | null;
+  /** Committed decisions with no recorded outcome. Resolving them is what turns context into evidence. */
+  unresolved: UnresolvedDecision[];
+  /** Called after an outcome is saved, so the sidebar can drop the row. */
+  onResolved: (id: string) => void;
+  /** Dismiss the open-loops section for this session. */
+  onDismissUnresolved: () => void;
   /** Hidden on a no-precedent answer: there is no calibration to point at, so showing counts would imply
    *  a conclusion the answer just declined to reach. */
   hideCalibration?: boolean;
@@ -284,6 +295,24 @@ export function Sidebar({
                     </span>
                   </li>
                 </ul>
+              </section>
+            )}
+
+            {/* ------------------------------------------------ open loops */}
+            {unresolved.length > 0 && (
+              <section>
+                <Label>Decisions to close out</Label>
+                <p className="mt-2 text-[12px] leading-relaxed text-ink-muted">
+                  You added these, but nobody has recorded how they turned out. Until then they can be
+                  recalled as context, never cited as evidence.
+                </p>
+                <div className="mt-2">
+                  <ResolveDecisions
+                    items={unresolved}
+                    onResolved={onResolved}
+                    onDismiss={onDismissUnresolved}
+                  />
+                </div>
               </section>
             )}
 

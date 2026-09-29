@@ -15,7 +15,9 @@ the store object and crashed the page during hydration, so the prefix is deliber
 """
 from __future__ import annotations
 
+import json
 import logging
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -44,6 +46,8 @@ class CommitBody(BaseModel):
     risk: str | None = None
     # Set once the user has reviewed the draft. Absent means "just draft it".
     draft: DecisionDraft | None = None
+    # Set when the user has seen a duplicate warning and still wants to add it.
+    confirm_duplicate: bool = False
 
 
 class DecisionDraft(BaseModel):
@@ -58,6 +62,13 @@ class DecisionDraft(BaseModel):
     context: str = ""
     domain: str = ""
     decision_type: str = ""
+
+
+class ResolveBody(BaseModel):
+    id: str
+    outcome: str                       # good | mixed | bad
+    result: str = ""                   # what actually happened, in the user's words
+    lesson: str = ""
 
 
 class DraftBody(BaseModel):
@@ -179,6 +190,25 @@ def record_and_crossref(text: str, *, domain: str | None, decision_type: str | N
     }
 
 
+def _likely_duplicate(text: str, *, cutoff: float = 0.86) -> dict[str, Any] | None:
+    """A committed decision that already says what this one is about.
+
+    Deliberately conservative: only committed rows count (an uncommitted prompt is not in the knowledge
+    base), and the bar is high, because a false positive blocks a legitimate new decision while a false
+    negative merely costs a warning. Returns the closest match so the caller can show it.
+    """
+    if not text.strip():
+        return None
+    vec = ps.embed(text)
+    if vec is None:
+        return None
+    for row in store.similar(vec, limit=3):
+        if row.get("committed") and float(row.get("similarity") or 0) >= cutoff:
+            return {"id": row.get("id"), "prompt": row.get("prompt"),
+                    "similarity": round(float(row["similarity"]), 3)}
+    return None
+
+
 @router.get("")
 async def list_prompts(limit: int = 20) -> dict[str, Any]:
     """Recent prompts, newest first. `committed` says which ones are in the knowledge base."""
@@ -238,21 +268,53 @@ async def commit(body: CommitBody) -> dict[str, Any]:
     if not store.ensure_schema():
         raise HTTPException(503, f"prompt store unavailable: {store.error}")
 
+    # Direct lookup by id. This used to scan `recent(limit=500)`, which silently 404s once the store grows
+    # past the window -- a bug that would only appear in production, with real history.
     row: dict[str, Any] | None = None
     if body.id:
-        row = next((r for r in store.recent(limit=500) if str(r["id"]) == body.id), None)
+        row = store.get(body.id)
         if row is None:
             raise HTTPException(404, f"unknown prompt id {body.id}")
+        # Idempotency: a retry, a double-click that beat the UI's busy flag, or a second tab would
+        # otherwise retain the same decision twice and double-count it as a precedent.
+        if row.get("hindsight_doc"):
+            return {"committed": True, "decision_id": row["hindsight_doc"], "already": True,
+                    "outcome_recorded": bool(row.get("outcome")),
+                    "hindsight": "skipped (already committed)"}
 
     text = body.prompt or (row or {}).get("prompt") or ""
     domain = body.domain or (row or {}).get("domain")
     dtype = body.decision_type or (row or {}).get("decision_type")
     risk = body.risk or (row or {}).get("risk")
 
+    # A decision recorded from the empty state arrives with no review behind it, so there is no prompt row
+    # yet. Create one here: without it the decision would be in Hindsight but invisible to the resolve
+    # queue and impossible to close out, because /resolve needs a row id.
+    if body.id is None and (body.prompt or "").strip():
+        new_id = store.record(prompt=body.prompt, domain=domain, decision_type=dtype,
+                              mode="decision", risk=risk, embedding=ps.embed(body.prompt))
+        if new_id:
+            body.id = new_id
+            row = store.get(new_id)
+            text = body.prompt
+
     if body.draft is not None:
         d = body.draft
         if not d.decision.strip():
             raise HTTPException(422, "the decision text is empty")
+
+        # Dedupe against the company's own history. Adding a decision the corpus already contains creates a
+        # second, near-identical precedent, and the ranker counts precedents -- so the same event would be
+        # evidence twice and inflate the proof count behind a verdict.
+        dup = _likely_duplicate(text or d.decision)
+        if dup and not body.confirm_duplicate:
+            raise HTTPException(409, json.dumps({
+                "reason": "looks_already_recorded",
+                "message": ("This looks like a decision already in the history, so adding it would count the "
+                            "same event twice as evidence."),
+                "existing": dup,
+            }))
+
         decision_id, doc = ps.decision_document_text(
             decision=d.decision.strip(),
             domain=(d.domain or domain),
@@ -286,4 +348,73 @@ async def commit(body: CommitBody) -> dict[str, Any]:
 
     return {"committed": True, "decision_id": decision_id, "metadata": doc["metadata"],
             "outcome_recorded": bool(body.draft and body.draft.outcome),
+            "hindsight": str(r)[:200]}
+
+
+@router.get("/unresolved")
+async def unresolved(limit: int = 5, domain: str | None = None) -> dict[str, Any]:
+    """Committed decisions whose outcome nobody has recorded yet.
+
+    The point of the store is to end up holding evidence, not just context. A decision that was added and
+    never followed up can never affect a verdict, so these are surfaced for the user to close out.
+    """
+    return {"items": store.unresolved(limit=limit, domain=domain)}
+
+
+@router.post("/resolve")
+async def resolve(body: ResolveBody) -> dict[str, Any]:
+    """Record what actually happened to a decision already in the history.
+
+    Re-retains under the SAME document_id, which supersedes the earlier document rather than adding a
+    second one (measured: two retains, one document). Without this, every added decision stays permanently
+    result-less: it can support a review as context but can never become evidence.
+    """
+    outcome = (body.outcome or "").strip().lower()
+    if outcome not in ("good", "mixed", "bad"):
+        raise HTTPException(422, "outcome must be one of: good, mixed, bad")
+
+    if not store.ensure_schema():
+        raise HTTPException(503, f"prompt store unavailable: {store.error}")
+
+    row = store.get(body.id)
+    if row is None:
+        raise HTTPException(404, f"unknown prompt id {body.id}")
+    if not row.get("committed"):
+        raise HTTPException(409, "this decision is not in the history, so there is nothing to resolve")
+
+    decision_id = row.get("hindsight_doc") or f"U-{date.today().isoformat()}-{str(body.id)[:6]}"
+
+    # Rebuild the record with the outcome folded in. The decision text and rationale come from the stored
+    # row: we do not have the original draft fields back from Hindsight, and re-reading the bank document to
+    # recover them would be a second round trip for detail the row already summarises faithfully.
+    decision_id, doc = ps.decision_document_text(
+        decision=row.get("prompt") or "",
+        domain=row.get("domain"),
+        decision_type=row.get("decision_type"),
+        result=body.result,
+        lesson=body.lesson,
+        outcome=outcome,
+        source_prompt=row.get("prompt"),
+        decision_id=decision_id,
+        resolved_at=datetime.now(timezone.utc),
+    )
+
+    from . import config, hindsight
+    try:
+        r = await hindsight.client().aretain_batch(
+            bank_id=config.settings().biz_bank_id,
+            items=[{"content": doc["text"], "context": "user-resolved business decision",
+                    "timestamp": None, "document_id": decision_id,
+                    "metadata": doc["metadata"]}],
+            retain_async=False,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("resolve retain failed: %s: %s", type(e).__name__, e)
+        raise HTTPException(502, f"Hindsight retain failed: {type(e).__name__}: {e}") from e
+
+    if not store.resolve(body.id, outcome=outcome, result_note=body.result or None):
+        # The retain landed but the local flag did not; say so rather than reporting a clean success.
+        log.warning("resolve: retain ok but local update matched no row for %s", body.id)
+
+    return {"resolved": True, "decision_id": decision_id, "outcome": outcome,
             "hindsight": str(r)[:200]}

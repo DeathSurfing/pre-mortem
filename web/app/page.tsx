@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, BookOpen, CircleAlert, CircleCheck, PanelLeft, TriangleAlert } from "lucide-react";
+import { ArrowUp, BookOpen, CircleAlert, CircleCheck, PanelLeft, Plus, TriangleAlert } from "lucide-react";
 import {
   api,
+  promptStore,
   streamRedflag,
   type Declined,
   type Ledger,
@@ -14,6 +15,7 @@ import {
   type GuessBlock,
   type Health,
   type SimilarPrompt,
+  type UnresolvedDecision,
 } from "@/lib/api";
 import { DecisionId, Label } from "@/components/editorial";
 import { AnnotatedProse, SourceRow } from "@/components/sources";
@@ -147,6 +149,11 @@ type Turn = {
 
 export default function Page() {
   const [turns, setTurns] = useState<Turn[]>([]);
+  const [unresolved, setUnresolved] = useState<UnresolvedDecision[]>([]);
+  /** Recording a decision from the empty state: the composer, and the text it hands to the sheet. */
+  const [recordOpen, setRecordOpen] = useState(false);
+  const [recordSeed, setRecordSeed] = useState("");
+  const [recordFor, setRecordFor] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [presets, setPresets] = useState<PromptPreset[]>([]);
   const [ledger, setLedger] = useState<Ledger | null>(null);
@@ -164,6 +171,8 @@ export default function Page() {
     api.prompts().then(setPresets).catch(() => {});
     api.ledger().then(setLedger).catch(() => {});
     api.health().then(setHealth).catch(() => {});
+    // Unresolved decisions are fetched for the sidebar, which is where the user closes the loop on them.
+    promptStore.unresolved(5).then((r) => setUnresolved(r.items ?? [])).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -307,6 +316,9 @@ export default function Page() {
         ledger={ledger}
         health={health}
         hideCalibration={latestNoPrecedent}
+        unresolved={unresolved}
+        onResolved={(id) => setUnresolved((prev) => prev.filter((x) => x.id !== id))}
+        onDismissUnresolved={() => setUnresolved([])}
       />
 
       <main className="mx-auto max-w-[1180px] px-4 pb-40 sm:px-6 sm:pb-48">
@@ -323,6 +335,55 @@ export default function Page() {
               <p className="mt-3 text-[16px] leading-relaxed text-ink-soft">
                 When there is no precedent, it says so instead of guessing.
               </p>
+
+              {/* Recording a decision that already happened, without reviewing it first. Without this the
+                  only way to build the history is to phrase a past event as a future question, which is
+                  both awkward and wrong: it is not a decision being considered. */}
+              <div className="mt-8 border-t border-rule pt-6">
+                <p className="text-[14px] text-ink-soft">
+                  Already made a decision?
+                </p>
+                <p className="mt-1 text-[13px] leading-relaxed text-ink-muted">
+                  Record it and future reviews can recall it by id.
+                </p>
+                {recordOpen ? (
+                  <div className="mt-3">
+                    <textarea
+                      rows={2}
+                      value={recordSeed}
+                      onChange={(e) => setRecordSeed(e.target.value)}
+                      placeholder="What did you decide? e.g. We gave Acme a 30 percent discount to close the renewal."
+                      className="w-full resize-y rounded-md border border-[var(--rule-strong)] bg-paper-raised px-3 py-2 text-[14px] text-ink placeholder:text-ink-faint focus:border-accent focus:outline-none"
+                    />
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => {
+                          setRecordOpen(false);
+                          setRecordFor(recordSeed.trim());
+                        }}
+                        disabled={!recordSeed.trim()}
+                        className="min-h-[36px] rounded-md bg-accent px-3.5 text-[13px] text-white transition-opacity hover:bg-accent-deep disabled:opacity-40"
+                      >
+                        Draft it
+                      </button>
+                      <button
+                        onClick={() => { setRecordOpen(false); setRecordSeed(""); }}
+                        className="min-h-[36px] rounded-md px-3 text-[13px] text-ink-muted transition-colors hover:bg-[var(--paper-sunk)] hover:text-ink"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setRecordOpen(true)}
+                    className="mt-3 inline-flex min-h-[38px] items-center gap-1.5 rounded-md border border-[var(--rule-strong)] px-3.5 text-[13px] text-ink transition-colors hover:bg-[var(--paper-sunk)]"
+                  >
+                    <Plus className="size-[14px]" strokeWidth={2.2} />
+                    Add a decision
+                  </button>
+                )}
+              </div>
 
               <div className="mt-9">
                 <Label>Try one</Label>
@@ -594,6 +655,21 @@ export default function Page() {
         ))}
         <div ref={endRef} />
       </main>
+
+      {/* Recording a decision from the empty state uses the same sheet, with no review behind it. */}
+      {recordFor !== null && (
+        <AddDecision
+          prompt={recordFor}
+          promptId={null}
+          onClose={() => { setRecordFor(null); setRecordSeed(""); }}
+          onAdded={() => {
+            setRecordFor(null);
+            setRecordSeed("");
+            // The new decision starts unresolved, so pull the queue forward for the sidebar.
+            promptStore.unresolved(5).then((r) => setUnresolved(r.items ?? [])).catch(() => {});
+          }}
+        />
+      )}
 
       {/* composer */}
       <div className="fixed inset-x-0 bottom-0 border-t border-rule bg-paper/95 backdrop-blur">
