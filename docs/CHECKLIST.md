@@ -3,8 +3,8 @@
 Two days. Day 1 build, day 2 video + content. Tick in order.
 
 The stack as it actually ships: **Hindsight Cloud** (no memory container), **Laya** baked into the api image
-(no model-serving container), **OpenCode Go** for our own prose calls, **FastAPI + Next.js**. Two containers
-total: `api` and `web`.
+(no model-serving container), **Postgres + pgvector** for the prompt store, **OpenCode Go** for our own prose
+calls, **FastAPI + Next.js**. Three containers total: `api`, `web`, `postgres`.
 
 ---
 
@@ -87,7 +87,8 @@ total: `api` and `web`.
 
 - [ ] Repo flipped from private to public
 - [ ] README: setup, the 5-year-old explainer, the three modes, follow-ups, the reasoning trace, the
-      "How Hindsight is used" table, the endpoint list, the Laya section
+      "How Hindsight is used" table, the endpoint list including **Prompt history**, the Laya section, and
+      the Postgres + pgvector service in the layout
 - [ ] `.env.example` committed; `.env` untracked. `git status --porcelain` and `git log -p -- .env` clean
 - [ ] Demo video link in the README and in the submission form
 - [ ] Live demo rehearsed twice against a fresh seed

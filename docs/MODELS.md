@@ -3,10 +3,11 @@
 Locked decisions. Everything marked VERIFIED was produced by running the command; anything else is marked
 UNVERIFIED with a fallback. Supersedes the earlier 9Router-first version.
 
-**Read sections 10-14 first if you want what the running system actually does.** Sections 1-9 are the
+**Read sections 10-15 first if you want what the running system actually does.** Sections 1-9 are the
 build-time plan and the live-probe record, and they are kept as written. Sections 10+ document the parts
 added after: the reasoning lane, the three-mode router, the `COVERED_DOMAINS` rule, Laya's deployment shape,
-and where the verdict is computed. Where a plan section has been overtaken by events it now says so inline.
+where the verdict is computed, and the prompt store. Where a plan section has been overtaken by events it
+now says so inline.
 
 ## 1. LLM: OpenCode Go (primary), 9Router (fallback, disabled)
 
@@ -572,3 +573,63 @@ observations carry empty metadata and their ids are a hint rather than a citatio
 
 Laya classifies; Hindsight remembers; the ranker decides; the LLM writes prose. Four separate jobs, no
 overlap.
+
+## 15. The prompt store (Postgres + pgvector)
+
+A second data store, deliberately separate from Hindsight, holding every prompt run and its embedding so a
+new prompt can be cross-referenced against the ones before it.
+
+**Why separate, and the rule that follows.** Hindsight is the company's curated decision memory and the
+thing the product reasons over. A prompt the user typed is not company knowledge. If prompts were retained
+they would become retrievable evidence, and unreviewed text could end up cited by the ranker. So prompts are
+recorded and vectorised in Postgres, and reach Hindsight only through an explicit user action.
+
+Retaining therefore happens in exactly two places, both user-initiated endpoints in `prompt_history.py`:
+`POST /api/biz/history/commit` (adding a decision) and `POST /api/biz/history/resolve` (recording its
+outcome). The automatic path, `record_and_crossref`, has no Hindsight import at all. That is the guarantee,
+and it is checkable by reading one file.
+
+### Embeddings are local, and add no dependency
+
+9router exposes no embeddings route (measured: `/v1/embeddings` returns
+`No credentials for provider: openai`, and no model in its list carries an embeddings capability), so
+embeddings run in-process. `BAAI/bge-small-en-v1.5`, 384 dimensions, CLS-pooled and L2-normalised so cosine
+distance is the honest metric.
+
+The dependency is already there: `torch` and `transformers` ship in the api image for Laya. The prompt store
+therefore adds no ML dependency and makes no network call at request time. Weights are fetched once at
+**image build time**, the same treatment Laya's ONNX snapshot gets, so a cold start does not pay for it.
+
+Warm cost is small, but the cold call is not: measured **13-61ms** per embed once the model is loaded, and
+around **1.3s for the first call**, which includes the lazy load. The model is loaded on first use rather
+than at boot, matching Laya, precisely so the container's healthcheck is not held hostage to a model load.
+The call runs inside the async request handler, so the cold cost is paid by whoever sends the first prompt
+after a restart.
+
+### Schema, and how it evolves
+
+`app/prompts.py` holds both the `CREATE TABLE` and a `MIGRATIONS` string of `ALTER TABLE ... IF NOT EXISTS`
+statements. Both run at `ensure_schema()`, which is idempotent and cached, so the table can be extended after
+a deployment without a manual step. The index is **HNSW** (`vector_cosine_ops`): adequate at this scale and
+it needs no training pass, unlike ivfflat which wants data present before it is useful.
+
+Columns beyond the obvious: `embedding` (nullable), `committed`, `hindsight_doc`, `outcome`, `result_note`,
+`resolved_at`, `origin`. `resolved_at` is the marker that separates "committed but the outcome is unknown"
+from "closed out", which is what makes the missing-outcome queue queryable.
+
+### Supersede, not duplicate
+
+Resolving a decision re-retains under the **same `document_id`**. Measured directly, because the whole
+feature depends on it: two retains with one `document_id` produced **1 document**, not 2. Without that,
+closing the loop would duplicate the precedent and inflate the proof count behind a verdict.
+
+### Verification
+
+`api/tests/test_prompt_store.py`, 23 checks, skips cleanly when `PROMPT_DB_URL` is unset. It covers the
+behaviours that were previously only hand-verified: an unembedded row is kept but excluded from similarity,
+the draft never invents a result or an outcome, `store.get()` finds a row outside the `recent()` window (the
+`recent(limit=500)` scan silently 404d past it), the full resolve lifecycle, and that reusing a
+`decision_id` supersedes rather than renames.
+
+Measured semantic quality on real prompts: a paraphrased renewal question matched its earlier phrasing at
+**0.907**, and an unrelated prompt matched nothing above the cutoff.

@@ -27,16 +27,29 @@ The UI carries 15% of the score and the demo *is* the UI. Splitting it means:
 browser ──▶ Next.js :3000 ──/api/biz/*──▶ FastAPI :8000 ──▶ Hindsight ──▶ LLM provider
                   │                            │
                   │                            ├── Laya (local ONNX int4, no network)
+                  │                            ├── Postgres + pgvector (prompt store, private)
                   │                            └── owns seeding, replay, metrics, ledger
                   └── Hindsight Control Plane (judges only, not the product)
 ```
+
+`postgres` is internal only: no published port, no domain, reachable solely as the compose service name
+`postgres` on the stack network. It holds two things the product needs and Hindsight must not hold:
+
+- **`prompts`**: every prompt run, with a 384-dim embedding, so a new prompt can be cross-referenced
+  against the ones before it. HNSW index on the vector column.
+- **the decision lifecycle**: `committed`, `hindsight_doc`, `outcome`, `resolved_at`.
 
 Hard rules:
 - The browser **never** talks to Hindsight. All memory access is behind FastAPI, so there is one contract
   and one place to cache.
 - FastAPI is the only writer to Hindsight.
+- FastAPI is the only reader or writer of the prompt store; the browser reaches it through `/api/biz/history/*`.
 - `NEXT_PUBLIC_API_BASE_URL` is the single coupling between the two.
 - The API host owns every Hindsight call, including the ledger reads.
+- **A prompt is stored, never retained.** The prompt store and the decision bank are separate on purpose: a
+  typed question is not company knowledge until a person commits it. Retaining happens only in the two
+  user-initiated endpoints, `POST /api/biz/history/commit` and `POST /api/biz/history/resolve`; the
+  automatic path (`record_and_crossref`, which runs on every prompt) has no Hindsight import at all.
 
 ## 3. The three-mode router
 
@@ -135,6 +148,32 @@ during that window.
 | `POST` | `/api/biz/consolidate` | trigger consolidation, optionally wait for observations |
 | `GET` | `/api/biz/ground-truth` | the corpus as written by seed, for scoring |
 
+### Prompt history (the store, and the commit gate)
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/biz/history` | recent prompts, newest first, each with `committed` and `has_vector` |
+| `GET` | `/api/biz/history/stats` | store counts (total / embedded / committed) and embedder status |
+| `GET` | `/api/biz/history/unresolved` | committed decisions with `resolved_at IS NULL`, same area first |
+| `POST` | `/api/biz/history/recall` | cross-reference text without recording it. Body `{prompt, limit}` |
+| `POST` | `/api/biz/history/draft` | draft a decision record from a review. Body `{prompt, domain, decision_type, risk, headline}` |
+| `POST` | `/api/biz/history/commit` | writes a reviewed decision to Hindsight, on a human yes. Body `{id?, prompt?, draft?, confirm_duplicate?}` |
+| `POST` | `/api/biz/history/resolve` | `{id, outcome, result?, lesson?}`, re-retains under the same `document_id` |
+
+Notes that matter for reading the code:
+
+- Recording happens inline in the review stream, on the `classify` event, and the result reaches the browser
+  as a `prompt_recorded` SSE event carrying the cross-reference. It is best-effort by design: if Postgres is
+  down, `record_and_crossref` returns `{"available": false}` and the review streams unchanged.
+- `/commit` accepts two shapes. With `draft`, the user's edited record is what is stored (the add-decision
+  path). Without it, the prompt alone is stored as a thinner record. Either way `outcome` is only written if
+  the user asserted one.
+- `/commit` is idempotent: a row that already has a `hindsight_doc` returns `{"already": true}` without a
+  second retain.
+- `/resolve` rejects an uncommitted row with `409`, and an `outcome` outside `good | mixed | bad` with `422`.
+- The store's schema and its migrations live in `app/prompts.py`; the migrations run idempotently at
+  `ensure_schema()` so the table can be extended after a deploy without a manual step.
+
 SSE event sequence from `bizlookalike.redflag_stream`: `status` -> `classify` -> (`status` -> `precedents`
 -> prose, in one of three shapes below) -> `done`, with `error` on failure carrying the partial answer. The
 three prose shapes are `query` (records then answer), `chat` (`delta` only), and `decision` (`verdict` and
@@ -208,13 +247,21 @@ api/
     laya_client.py     local ONNX classifier wrapper, lazy load, status
     hindsight.py       client factory, bank bootstrap, seed, recall, reflect, consolidation, stats
     llm.py             chat_json / chat_text / chat_stream, retry ladder, reasoning lane
+    prompts.py         the prompt store: schema, idempotent migrations, local embeddings, document shape
+    prompt_history.py  the commit gate, decision drafting, the outcome loop, duplicate detection
     replay.py          legacy epoch replay -> replay.json
   scripts/
     smoke.py           42 checks against a live URL, business path, `--deep` adds more
     mode_check.py      routes 9 messages and asserts the mode contract for each
     conversation_check.py opening question reviewed, three follow-ups all chat
   tests/test_e2e.py    assert-based end-to-end against real Hindsight
+  tests/test_prompt_store.py  store + decision lifecycle, 23 checks, skips without a database
 ```
+
+`prompts.py` and `prompt_history.py` are split by responsibility rather than by route: the former owns
+Postgres and the embedding model and knows nothing about HTTP, the latter owns the endpoints and the rules
+about what may reach Hindsight. That split is what makes "a prompt is stored, never retained" checkable by
+reading one file.
 
 ## 8. Ranking, deterministic and shown
 
@@ -280,7 +327,10 @@ web/
     sources.tsx         hidden-by-default citation pills, preview popover, AnnotatedProse
     reasoning.tsx       the collapsed thinking trace
     guess.tsx           the labelled no-precedent guess panel
-    sidebar.tsx         theme, evidence default, engine detail, calibration block, status line
+    commit-prompt.tsx   the "is this a decision the company made?" offer + cross-reference
+    add-decision.tsx    the capture sheet: pre-drafted from the review, editable, then committed
+    resolve-decisions.tsx  "what actually happened?", the loop that turns context into evidence
+    sidebar.tsx         theme, evidence default, engine detail, calibration block, open loops, status line
     theme-toggle.tsx    ThemeChoice (the one the sidebar uses)
   lib/api.ts            typed client, fetch + ReadableStream (EventSource cannot POST)
   lib/settings.ts       UI preferences, persisted
@@ -301,7 +351,15 @@ Fonts are self-hosted from `web/public/fonts/` because `next/font/google` fetche
 Docker builder has no network.
 
 No automated browser test exists: Playwright was never installed and there is no Chrome binary on the build
-host, so the UI is verified from built CSS, served HTML and the deployed bundle, not from rendered pixels.
+host. The UI is verified from built CSS, served HTML and the deployed bundle, plus targeted DOM measurement
+in a real browser during development (element geometry, computed styles, scroll position, and the presence
+of a specific token in the served bundle). Rendered-pixel review is a manual step, not a gate.
+
+Screenshots alone are not evidence of a bug: a viewport capture always cuts content at the edge, so
+apparent clipping has to be confirmed by measuring the element (`scrollHeight > clientHeight`, or
+`scrollWidth > clientWidth`) before it is treated as real. That distinction caught three false positives
+during this project (a "clipped" placeholder that was a scroll position, "inconsistent" type sizes that were
+identical, and a "drawer open on load" that was carried-over client state).
 
 ## 12. Testing
 
@@ -311,6 +369,7 @@ host, so the UI is verified from built CSS, served HTML and the deployed bundle,
 | Follow-ups | `api/scripts/conversation_check.py` | the opening question is reviewed; three follow-ups are all `chat` with `follow_up=true` and no verdict re-issued |
 | Live smoke | `api/scripts/smoke.py` | 42 checks against any base URL, business path, including the SSE event sequence and the liveness/readiness split. `--deep` adds bank and ledger checks (49 total). |
 | API e2e | `api/tests/test_e2e.py` | assert-based, real Hindsight; default run makes no LLM calls |
+| Prompt store | `api/tests/test_prompt_store.py` | 23 checks: an unembedded row is kept but excluded from similarity, the draft never invents a result or an outcome, `store.get()` finds a row outside the `recent()` window, the resolve lifecycle (refused while uncommitted, then outcome stored, `resolved_at` set, leaves the queue), the stored document is honest about an unknown outcome, and reusing a `decision_id` supersedes. Skips cleanly without `PROMPT_DB_URL` rather than failing. |
 
 Run against any base URL: `python3 api/scripts/mode_check.py https://premortem-api.lexcontra.com`
 
@@ -326,8 +385,17 @@ Run against any base URL: `python3 api/scripts/mode_check.py https://premortem-a
 | Observations not consolidated | `POST /api/biz/consolidate`, and it runs at seed time |
 | Contradictory precedents | both rendered, the card states why, the agent never averages them into a comforting middle |
 | Bad/missing env | `settings().problems()` is reported by `/health`; `next build` must not require runtime secrets |
+| Postgres (prompt store) unreachable | `ensure_schema()` fails once, is logged, and every store function returns empty; `record_and_crossref` reports `{"available": false}`; the review streams unchanged and `/health` shows `prompt_store.error` |
+| Embedding model fails to load | the prompt is still recorded with `embedding IS NULL`, and appears in `/api/biz/history` with `has_vector: false`; it is excluded from similarity rather than ranked at a fake distance. Model weights are cached at image build time so this is a cold-start edge, not the normal path |
+| Commit reaches Hindsight but the local flag fails | logged as a warning and reported, not swallowed: the decision is retained but the row stays uncommitted |
+| Drafting model unavailable | `draft_decision` returns the user's own words as the decision text with every other field empty, so the form is fillable by hand rather than blocked |
 
 ## 14. Non-goals, permanent
 
-No live deploys from the product. No auth. No database of our own (Hindsight owns the memory). No second use
-case. No real customer data. Nothing in the product ships, approves, or advises.
+No live deploys from the product. No auth. No second use case. No real customer data. Nothing in the product
+ships, approves, or advises.
+
+There is now a small database of our own (the prompt store, section 2), but the statement it replaces is
+still true in the way that matters: **Hindsight owns the memory the product reasons over.** Postgres holds
+what people asked and the state of what they chose to add, and nothing in it is retrieved as evidence unless
+a person committed it. The product's knowledge still lives in one place.

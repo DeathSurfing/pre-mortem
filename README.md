@@ -6,8 +6,12 @@ Describe a decision you are considering, in plain English. The agent searches wh
 actually done before, flags what went wrong, and cites each past decision by id. When there is no
 precedent it says so instead of inventing one.
 
+It also lets you **add decisions the company has made**, so the history grows from use rather than staying a
+fixed corpus. Added decisions start with no outcome recorded, and are asked about later; once you say how one
+turned out, it can count as evidence rather than merely as context.
+
 Built for the *AI Agents That Learn Using Hindsight* hackathon. Memory layer: [Hindsight](https://hindsight.vectorize.io/).
-Local classification: [Laya](https://huggingface.co/convaiinnovations/laya).
+Local classification: [Laya](https://huggingface.co/convaiinnovations/laya). Prompt store: Postgres + pgvector.
 
 ---
 
@@ -125,12 +129,20 @@ no way to prove the reasoning.
 | Refusing instead of guessing | `disposition` skepticism 4 / literalism 5 / empathy 2 |
 | The agent answering from its own reasoning, on camera | `reflect` with `response_schema` |
 | Showing the literal assembled prompt | `banks.preview_prompt()` |
+| A decision the user added during the session, citable by id later | `retain` from `POST /api/biz/history/commit`, on a human yes |
+| Recording what actually happened to an added decision | re-`retain` under the same `document_id` from `/api/biz/history/resolve`, which supersedes rather than duplicates |
+| **Not** asking people's typed prompts | deliberately absent: prompts are recorded and vectorised in the prompt store (Postgres + pgvector), never retained. See *Prompt history* under Endpoints |
 | Forcing consolidation before a demo | `banks.recover_consolidation()` |
 
 **Lookahead is controlled honestly.** `query_timestamp` is a ranking hint on API 0.10.1, it does **not**
 filter results (measured: identical result sets for any timestamp). So the replay filters by
 `occurred_start` in code, and the live demo seeds only up to the day being evaluated. The README says this
 is our evaluation logic rather than a server guarantee, because that is what is true.
+
+**What explicitly does not go into Hindsight.** Every prompt run is recorded and vectorised for
+cross-referencing, but prompts are **not** retained. Hindsight holds the curated decision record; the prompt
+store (Postgres + pgvector) holds what people asked. The only bridge is the commit endpoint, on a human yes,
+so unreviewed text can never become evidence the ranker cites. See *Prompt history* above.
 
 The corpus is 72 decisions across 10 domains, with outcomes of 47 good / 22 bad / 3 mixed. The live bank
 holds 77 documents and 68 observations. Nothing here is real company data: the corpus is synthetic, and the
@@ -176,6 +188,46 @@ The business path, which is the product:
 | `POST` | `/api/biz/consolidate` | force consolidation, for a demo |
 | `GET` | `/api/biz/ground-truth` | the corpus, for scoring |
 
+### Prompt history (the store, and the commit gate)
+
+Every prompt run is recorded to Postgres and vectorised, so a new prompt can be cross-referenced against
+the ones before it. Recording is automatic; **adding a decision to the company's knowledge base is not**.
+That is the whole point of the split: a prompt a user typed is not company knowledge until someone decides
+it is, and the store is deliberately separate from Hindsight so unreviewed text can never enter the
+evidence the ranker cites.
+
+| Method | Path | What it does |
+|---|---|---|
+| `GET` | `/api/biz/history` | recent prompts, newest first, with which are committed |
+| `GET` | `/api/biz/history/stats` | store counts and embedder status |
+| `GET` | `/api/biz/history/unresolved` | committed decisions with no recorded outcome yet |
+| `POST` | `/api/biz/history/recall` | cross-reference arbitrary text without recording it |
+| `POST` | `/api/biz/history/draft` | draft a decision record from a review, for the user to edit |
+| `POST` | `/api/biz/history/commit` | writes a reviewed decision to Hindsight, on a human yes |
+| `POST` | `/api/biz/history/resolve` | records what actually happened, closing the loop |
+
+Two properties of this path are enforced in code and covered by tests:
+
+- **A prompt is recorded and vectorised, never retained.** Retaining happens in exactly two places, both in
+  `prompt_history.py`: `/commit` (adding a decision) and `/resolve` (recording its outcome). Both are
+  user-initiated endpoints. `record_and_crossref`, which runs automatically on every prompt, has no Hindsight
+  import at all, so it cannot retain even by mistake. That is the whole guarantee: automatic work never
+  writes to the decision bank.
+- **Nothing is invented.** A decision still being weighed has no result, so drafting leaves `result` and
+  `outcome` empty and the stored document says so in words. `outcome` is validated against
+  `good | mixed | bad`; `domain` and `decision_type` are constrained to the corpus taxonomy, because an
+  off-vocabulary label would still be stored but could never match a corpus record in the lookalike
+  comparison, making the record unretrievable in practice.
+
+`resolve` re-retains under the **same `document_id`**, which supersedes the earlier document rather than
+adding a second one (measured: two retains with one id produce one document). Without this an added
+decision would stay permanently result-less: recallable as context, but never able to count as evidence,
+which is what the verdict is computed from.
+
+Committing the same decision twice is refused, and adding one the history already contains returns `409`
+with the match shown, because the ranker counts precedents and the same event twice would inflate the
+proof count behind a verdict.
+
 The legacy deploy path from the earlier pivot is still served alongside it:
 `POST /api/assess`, `GET /api/presets`, `GET /api/metrics`, `POST /api/replay`, `POST /api/seed`,
 `GET /api/bank`, `GET /api/ledger`, `GET /api/ground-truth`, `POST /api/consolidate`.
@@ -195,31 +247,45 @@ healthcheck. Under latency the container was marked unhealthy, Traefik withdrew 
 the API host returned Traefik's plain-text `404 page not found` while the app was running fine. A
 third-party API must not be able to unroute the deployment.
 
-`/health` reports `bank_id: bizdecisions` and a `banks` object of `{business: bizdecisions, legacy_deploy: premortem}`.
+`/health` reports `bank_id: bizdecisions`, a `banks` object of
+`{business: bizdecisions, legacy_deploy: premortem}`, and a `prompt_store` block (`url_set`, plus `error`
+only when the store is unreachable). The prompt store is local, so reporting it here cannot unroute the
+deployment; a store that is down degrades cross-referencing, not the review.
 
 ## Setup
 
 ```bash
 cp .env.example .env      # HINDSIGHT_API_KEY, OPENCODE_GO_API_KEY, NEXT_PUBLIC_API_BASE_URL
-docker compose up --build # api :8000, web :3000
+docker compose up --build # api :8000, web :3000, postgres (pgvector) internal only
 
 # first run only: build the corpus, then WAIT for observations (they are a background job)
 curl -X POST localhost:8000/api/biz/seed
 python api/scripts/smoke.py --url http://localhost:8000
 ```
 
-Local dev without containers: `uvicorn app.main:app --reload` in `api/`, `npm run dev` in `web/`.
+Three containers: `api`, `web`, and `postgres`, which is the prompt store. `postgres` uses the
+`pgvector/pgvector:pg16` image and a named volume (`promptstore`), carries no published port, and is
+reachable only on the compose network as `postgres`. The API waits for it to be healthy, but a store that is
+down degrades cross-referencing rather than breaking the review: every function on that path returns empty
+and logs, so the answer still streams.
+
+Local dev without containers: `uvicorn app.main:app --reload` in `api/`, `npm run dev` in `web/`. You need a
+Postgres with the `vector` extension and `PROMPT_DB_URL` pointing at it; without one the store reports
+unavailable and the rest of the product works unchanged.
 
 No Groq key, no OpenAI key. Hindsight runs on Vectorize Cloud; our own LLM calls go to **OpenCode Go**
 (`deepseek-v4.1-flash`); classification and mode routing are local via **Laya** (ONNX int4, 275MB,
-Apache-2.0, baked into the api image). `recall` costs no LLM at all, which is why the replay and the metrics
-are free and reproducible.
+Apache-2.0, baked into the api image). Embeddings for the prompt store are local too
+(`BAAI/bge-small-en-v1.5`, 384-dim, CPU), reusing the `torch` already in the image for Laya, so the
+prompt store adds no ML dependency and no network call. `recall` costs no LLM at all, which is why the
+replay and the metrics are free and reproducible.
 
-Two checks worth running against any base URL:
+Three checks worth running against any base URL:
 
 ```bash
 python3 api/scripts/mode_check.py https://premortem-api.lexcontra.com          # mode contract, 9 messages
 python3 api/scripts/conversation_check.py https://premortem-api.lexcontra.com  # follow-ups stay chat
+python3 api/tests/test_prompt_store.py                                         # 23 checks, needs PROMPT_DB_URL
 ```
 
 ## Layout
@@ -236,8 +302,14 @@ pre-mortem/
     DEMO.md              <- video script, shot list, article + social outline
     CHECKLIST.md         <- build, pre-record, submission gates
   api/                   <- FastAPI: owns Hindsight, ranking, replay, streaming
+    app/prompts.py       <- the prompt store: schema, migrations, local embeddings
+    app/prompt_history.py<- the commit gate, drafting, and the outcome loop
+    tests/test_prompt_store.py <- store + lifecycle checks
   web/                   <- Next.js: the chat window
-  docker-compose.yml     <- api + web (Hindsight and Laya are external/baked)
+    components/add-decision.tsx     <- capture a decision, pre-drafted from the review
+    components/commit-prompt.tsx    <- the offer, plus the cross-reference
+    components/resolve-decisions.tsx<- record what actually happened
+  docker-compose.yml     <- api + web + postgres (pgvector); Hindsight and Laya are external/baked
 ```
 
 ## Scope, stated plainly
