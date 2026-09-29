@@ -240,6 +240,54 @@ The legacy deploy path from the earlier pivot is still served alongside it:
 `POST /api/assess`, `GET /api/presets`, `GET /api/metrics`, `POST /api/replay`, `POST /api/seed`,
 `GET /api/bank`, `GET /api/ledger`, `GET /api/ground-truth`, `POST /api/consolidate`.
 
+### Production guards (mode switch, rate limit, and what does not exist)
+
+There are no accounts, so every visitor is anonymous. **One variable, `APP_MODE`, controls the whole guard
+surface:**
+
+| | `APP_MODE=prod` (default) | `APP_MODE=dev` |
+|---|---|---|
+| Endpoints that spend money or write the bank | **404** | reachable |
+| Per-visitor rate limit | **on**, 10 per 24h | **off** |
+
+One switch rather than several flags, because the dangerous state is getting it half right: enabling the
+admin endpoints in production to seed once and forgetting to re-enable the limit. An unset or unrecognised
+`APP_MODE` is treated as **prod**, so a typo tightens the system rather than opening it. `ADMIN_ENDPOINTS_ENABLED`
+and `RATE_LIMIT_ENABLED` still exist as per-guard overrides and win over the mode when set.
+
+**In production, the cost and write endpoints do not exist.** `POST /api/biz/seed` spends 72 paid extractions
+in one unauthenticated request; `commit` and `resolve` write to the bank the product cites, so an anonymous
+caller could pollute the evidence. Along with `consolidate`, `replay` and `health/llm`, these answer
+**404, not 403**: a 403 confirms the path exists and is worth attacking.
+
+**The per-visitor limit counts only the paths that do work:**
+
+| Counted (costs allowance) | Free (never counted) |
+|---|---|
+| `POST /api/biz/redflag`, `/api/biz/redflag/stream` | every `GET`: `/health`, `/api/biz/prompts`, `/api/biz/history`, `/stats`, `/unresolved` |
+| `POST /api/biz/history/draft`, `/commit`, `/resolve` | `POST /api/biz/history/recall` |
+| `POST /api/assess` (legacy) | `OPTIONS` preflight |
+
+Counting the free reads would exhaust a visitor's allowance during one page load, before they typed anything.
+On refusal the API returns `429` with `reason: "contact_sales"`, and the frontend replaces the composer with
+a contact gate rather than a retryable-looking error. The gate stops further prompts client-side as well: the
+composer is removed and `ask` refuses, so a preset click cannot slip through. The header shows the remaining
+allowance before the limit bites, so it reads as a known boundary rather than a surprise.
+
+**The client address is the last entry of `X-Forwarded-For`**, which is the one Traefik appends. Taking the
+first would be trivially spoofable, since a client controls the prefix.
+
+**CORS is restricted to the web origin**, `https://premortem.lexcontra.com`, not `*`. With a wildcard, any
+site's JavaScript could call this API from a visitor's browser and spend their allowance. Being precise:
+**CORS is a browser control and does not stop `curl`.** It is not a substitute for the rate limit; it closes
+a different hole.
+
+**What this is not.** A determined caller can still send requests from many addresses, and the counter is
+in-memory, so it resets when the container restarts and does not span replicas. It is sized to stop the
+realistic case, a public URL being scraped and looped, not a distributed attacker. Closing that properly
+means taking the API off the public internet and reaching it only through the web app on the compose network,
+with the counters in a shared store.
+
 ### Health
 
 Two endpoints, and the difference is the point.

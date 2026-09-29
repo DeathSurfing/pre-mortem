@@ -143,18 +143,44 @@ def client_ip(request: Any) -> str:
     return getattr(getattr(request, "client", None), "host", None) or "unknown"
 
 
+def app_mode() -> str:
+    """`prod` or `dev`. The single switch for the whole guard surface.
+
+    One variable rather than several, because the dangerous combination is getting it half right: someone
+    enables the admin endpoints in production to seed once and forgets to turn the rate limit back on, or the
+    reverse. `APP_MODE` makes the safe posture the default and the unsafe posture one obvious deliberate act.
+
+    Unrecognised values resolve to `prod`, so a typo tightens the system rather than opening it. That is the
+    failure direction a security switch should have.
+    """
+    mode = str(os.getenv("APP_MODE", "prod")).strip().lower()
+    return mode if mode in ("prod", "dev") else "prod"
+
+
+def is_dev() -> bool:
+    return app_mode() == "dev"
+
+
+def _flag(name: str, *, if_unset: str) -> bool:
+    """An explicit env var wins; otherwise fall back to the mode's default."""
+    raw = os.getenv(name)
+    if raw is not None and str(raw).strip() != "":
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
+    return str(if_unset).lower() in ("1", "true", "yes", "on")
+
+
 def admin_enabled() -> bool:
     """Whether the money-spending endpoints exist at all.
 
-    Off by default, and production never turns it on: the deployed stack is seeded already, so there is no
-    reason for the surface to be reachable. Local development sets ADMIN_ENDPOINTS_ENABLED=1.
+    On in dev, off in prod. Production is already seeded, so there is no reason for a request that spends 72
+    paid extractions to be reachable by anyone who has the URL.
     """
-    return str(os.getenv("ADMIN_ENDPOINTS_ENABLED", "0")).strip().lower() in ("1", "true", "yes", "on")
+    return _flag("ADMIN_ENDPOINTS_ENABLED", if_unset="1" if is_dev() else "0")
 
 
 def limit_enabled() -> bool:
-    """Escape hatch for load testing and for local work. On by default."""
-    return str(os.getenv("RATE_LIMIT_ENABLED", "1")).strip().lower() in ("1", "true", "yes", "on")
+    """Whether the per-visitor cap applies. Off in dev, so development is never spent fighting it."""
+    return _flag("RATE_LIMIT_ENABLED", if_unset="0" if is_dev() else "1")
 
 
 def payment_required_body(used: int, limit: int, retry_after: int) -> dict[str, Any]:

@@ -127,6 +127,9 @@ async def health() -> dict[str, Any]:
                    "window_seconds": ratelimit.limiter.window_s,
                    "enabled": ratelimit.limit_enabled(),
                    "admin_endpoints": ratelimit.admin_enabled()},
+        # The mode is public so a deployment can be checked at a glance: `dev` on a public URL means the
+        # guards are off, which is exactly the thing you want to notice rather than discover.
+        "mode": ratelimit.app_mode(),
     }
 
 

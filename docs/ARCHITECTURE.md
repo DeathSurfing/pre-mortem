@@ -50,6 +50,11 @@ Hard rules:
   typed question is not company knowledge until a person commits it. Retaining happens only in the two
   user-initiated endpoints, `POST /api/biz/history/commit` and `POST /api/biz/history/resolve`; the
   automatic path (`record_and_crossref`, which runs on every prompt) has no Hindsight import at all.
+- **The cost and write endpoints do not exist in production**, and the prompt endpoints are limited per
+  visitor. Both are driven by one `APP_MODE` switch (`prod` / `dev`), so a deployment cannot be left half
+  guarded. See *Production guards* in the README.
+- **CORS is the web origin, not `*`.** CORS is a browser control and does not stop `curl`; it is not a
+  substitute for the rate limit.
 
 ## 3. The three-mode router
 
@@ -373,6 +378,24 @@ identical, and a "drawer open on load" that was carried-over client state).
 
 Run against any base URL: `python3 api/scripts/mode_check.py https://premortem-api.lexcontra.com`
 
+`APP_MODE` changes what a test run is testing, so set it deliberately. The guard matrix is small enough to
+check by hand and worth doing after any change to `ratelimit.py`:
+
+```bash
+APP_MODE=prod python3 -c "from app import ratelimit as r; print(r.admin_enabled(), r.limit_enabled())"  # False True
+APP_MODE=dev  python3 -c "from app import ratelimit as r; print(r.admin_enabled(), r.limit_enabled())"  # True  False
+```
+
+Two traps worth knowing when testing the guards:
+
+- **`ADMIN_PATHS` cover endpoints that hit the real bank.** Flipping to `dev` and calling
+  `POST /api/biz/seed` to prove the endpoint became reachable will re-retain the whole corpus against
+  whatever `HINDSIGHT_BIZ_BANK_ID` points at. It supersedes rather than duplicates (same `document_id`), so
+  the document count does not move and the damage looks like nothing, but it spends real extraction tokens.
+  Point a scratch bank at it, or do not call it.
+- **The rate limit is per-process and in-memory**, so a fresh container forgives everyone. A test that
+  expects a 429 must exhaust the allowance within one server's lifetime.
+
 ## 13. Failure handling
 
 | Failure | Handling |
@@ -389,6 +412,8 @@ Run against any base URL: `python3 api/scripts/mode_check.py https://premortem-a
 | Embedding model fails to load | the prompt is still recorded with `embedding IS NULL`, and appears in `/api/biz/history` with `has_vector: false`; it is excluded from similarity rather than ranked at a fake distance. Model weights are cached at image build time so this is a cold-start edge, not the normal path |
 | Commit reaches Hindsight but the local flag fails | logged as a warning and reported, not swallowed: the decision is retained but the row stays uncommitted |
 | Drafting model unavailable | `draft_decision` returns the user's own words as the decision text with every other field empty, so the form is fillable by hand rather than blocked |
+| Visitor over the allowance | `429` with `reason: "contact_sales"`; the composer is replaced by the gate and `ask` refuses, so no further prompt can be sent from the page. The 429 is built in middleware, so it sets its own CORS headers: without them the browser blocks the response and `fetch` rejects as an opaque `TypeError`, which the frontend cannot tell apart from the API being down. It also falls back to probing a free endpoint before showing a network error |
+| `APP_MODE` misconfigured | any unrecognised value resolves to `prod`, so a typo tightens the guards rather than opening them. `/health` publishes the resolved `mode`, so a deployment running `dev` on a public host is visible rather than silent |
 
 ## 14. Non-goals, permanent
 

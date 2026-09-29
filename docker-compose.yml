@@ -49,11 +49,14 @@ services:
       LAYA_ONNX_FILE: ${LAYA_ONNX_FILE:-model_int4.onnx}
       MIN_PROOF: ${MIN_PROOF:-1}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
-      # Abuse guards. The admin endpoints (seed, consolidate, replay, health/llm) are 404 unless this is
-      # explicitly enabled, so the deployed stack never exposes a request that spends money or rewrites the
-      # shared bank. Local development can set ADMIN_ENDPOINTS_ENABLED=1. See .env.example.
-      ADMIN_ENDPOINTS_ENABLED: ${ADMIN_ENDPOINTS_ENABLED:-0}
-      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-1}
+      # One switch for the whole guard surface. `prod` (the default) disables the endpoints that spend money
+      # or rewrite the shared bank, and caps the prompt endpoints per visitor. `dev` turns both guards off so
+      # development is not spent fighting them. An unset APP_MODE is treated as prod, so a typo tightens
+      # rather than opens.
+      APP_MODE: ${APP_MODE:-prod}
+      # Per-guard overrides, for the rare case where the mode is not the answer. Leave unset normally.
+      ADMIN_ENDPOINTS_ENABLED: ${ADMIN_ENDPOINTS_ENABLED:-}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-}
       RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-10}
       RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-86400}
     expose:
