@@ -99,6 +99,8 @@ export type Health = {
   laya?: { enabled?: boolean; loaded?: boolean; error?: string | null };
   models?: { llm?: string; fallback?: string };
   features?: Record<string, unknown>;
+  /** Abuse guards, published so the UI can show the remaining allowance before the first request. */
+  limits?: { requests_per_window?: number; window_seconds?: number; enabled?: boolean; admin_endpoints?: boolean };
 };
 
 export type GuessBlock = {
@@ -147,6 +149,17 @@ export type HistoryTurn = { role: "user" | "assistant"; content: string };
 /** How many prior turns to send. Enough for continuity, bounded so the request cannot grow without limit. */
 const HISTORY_LIMIT = 12;
 
+/**
+ * Thrown when the server has exhausted the caller's allowance. Distinct from a generic Error so the UI can
+ * open the contact-sales gate instead of showing a retryable-looking failure.
+ */
+export class RateLimitedError extends Error {
+  constructor(readonly limit: number, readonly retryAfter: number, message: string) {
+    super(message);
+    this.name = "RateLimitedError";
+  }
+}
+
 export async function streamRedflag(
   prompt: string,
   onEvent: (e: StreamEvent) => void,
@@ -162,6 +175,20 @@ export async function streamRedflag(
     signal,
     cache: "no-store",
   });
+  if (res.status === 429) {
+    // Parsed rather than read from `Retry-After` alone: the body carries the limit and the reason, and
+    // `reason` is what distinguishes "you are out of free reviews" from a transient throttle.
+    let limit = 0, retry = 0, message = "You have used all your free reviews.";
+    try {
+      const b = await res.json();
+      limit = Number(b?.limit ?? 0);
+      retry = Number(b?.retry_after_seconds ?? 0);
+      message = String(b?.message ?? message);
+    } catch {
+      /* keep the defaults; a missing body must not turn into a crash */
+    }
+    throw new RateLimitedError(limit, retry, message);
+  }
   if (!res.ok || !res.body) {
     throw new Error(`stream -> ${res.status} ${(await res.text()).slice(0, 200)}`);
   }
@@ -241,6 +268,27 @@ export const promptStore = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  /**
+   * Ask a FREE endpoint whether this visitor is out of allowance.
+   *
+   * Needed because a 429 without CORS headers reaches `fetch` as an opaque TypeError, indistinguishable
+   * from the server being unreachable. `/health` is not counted against the limit, so asking costs nothing
+   * and cannot itself trip the guard. Returns the gate payload when limited, else null.
+   */
+  gateCheck: async (): Promise<{ limit: number; retryAfter: number } | null> => {
+    try {
+      const h = await req<Health>("/health");
+      const limit = h?.limits?.requests_per_window ?? 10;
+      const enabled = h?.limits?.enabled ?? false;
+      if (!enabled) return null;
+      // A counted request that failed is strong evidence the allowance is gone; the server does not expose
+      // remaining quota on a free endpoint, so this is deliberately a "was the last one refused" probe
+      // rather than a precise count.
+      return { limit, retryAfter: h?.limits?.window_seconds ?? 86400 };
+    } catch {
+      return null;
+    }
+  },
 };
 
 export type UnresolvedDecision = {

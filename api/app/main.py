@@ -7,13 +7,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from . import (bizcorpus, bizledger, bizlookalike, hindsight, laya_client, ledger, lookalike,
-               prompt_history, prompts, replay)
+               prompt_history, prompts, ratelimit, replay)
 from .config import (BIZ_DIRECTIVES, BIZ_MISSION, BIZ_RETAIN_INSTRUCTIONS, settings)
 from .corpus import ground_truth, PRESETS, PRESET_BY_KEY, corpus
 
@@ -28,6 +28,64 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    """One chokepoint for the two production guards.
+
+    Placed here rather than in the handlers on purpose: a guard that each route must remember to call is a
+    guard that will eventually be missing from a new route. Every request passes through this.
+
+    Order matters. The admin check runs first so that a cost endpoint is refused for being an admin endpoint
+    even when the caller is also over the limit; otherwise the refusal reason leaks which paths exist.
+
+    Responses built here bypass the CORS middleware (middleware added later runs first, so this wraps it), so
+    they must carry the CORS headers themselves. Without them the browser blocks the response and `fetch`
+    rejects as an opaque network failure, which the frontend cannot distinguish from the server being down:
+    the 429 never reaches the code that opens the contact-sales gate.
+    """
+    path = request.url.path.rstrip("/") or "/"
+
+    def cors_ok(resp: JSONResponse) -> JSONResponse:
+        """Attach the headers the CORS middleware would have added, for responses built in this layer."""
+        origin = settings().cors_origins
+        allow = "*" if "*" in origin else (request.headers.get("origin") or "")
+        if allow and ("*" in origin or allow in origin):
+            resp.headers["Access-Control-Allow-Origin"] = allow
+            resp.headers["Vary"] = "Origin"
+        return resp
+
+    # Preflight carries no work and must not consume a visitor's allowance, or one page load would.
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    if path in ratelimit.ADMIN_PATHS and not ratelimit.admin_enabled():
+        # 404, not 403: in production these paths should not appear to exist at all. A 403 tells a scanner
+        # it found something worth attacking.
+        log.warning("refused admin path %s from %s", path, ratelimit.client_ip(request))
+        return cors_ok(JSONResponse({"detail": "Not Found"}, status_code=404))
+
+    if ratelimit.limit_enabled() and path in ratelimit.COUNTED_PATHS:
+        ip = ratelimit.client_ip(request)
+        allowed, remaining, retry_after = ratelimit.limiter.check(ip)
+        if not allowed:
+            used, retry = ratelimit.limiter.peek(ip)
+            log.info("rate limited %s on %s (used %s)", ip, path, used)
+            return cors_ok(JSONResponse(
+                ratelimit.payment_required_body(max(used, ratelimit.limiter.limit),
+                                                ratelimit.limiter.limit, retry),
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            ))
+        response = await call_next(request)
+        response.headers["X-RateLimit-Limit"] = str(ratelimit.limiter.limit)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+        return response
+
+    return await call_next(request)
+
+
 app.include_router(prompt_history.router)
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
@@ -63,6 +121,12 @@ async def health() -> dict[str, Any]:
         # only when it is unreachable; a missing store degrades cross-referencing, not the review.
         "prompt_store": {"url_set": bool(os.getenv("PROMPT_DB_URL") or os.getenv("DATABASE_URL")),
                          "error": prompt_history.store.error},
+        # Public and intentional: the frontend needs the limit to render "N of 10 left" before the first
+        # request, and a limit the client cannot see is a limit that looks like a bug when it bites.
+        "limits": {"requests_per_window": ratelimit.limiter.limit,
+                   "window_seconds": ratelimit.limiter.window_s,
+                   "enabled": ratelimit.limit_enabled(),
+                   "admin_endpoints": ratelimit.admin_enabled()},
     }
 
 

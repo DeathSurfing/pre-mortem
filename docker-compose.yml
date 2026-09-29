@@ -49,6 +49,13 @@ services:
       LAYA_ONNX_FILE: ${LAYA_ONNX_FILE:-model_int4.onnx}
       MIN_PROOF: ${MIN_PROOF:-1}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      # Abuse guards. The admin endpoints (seed, consolidate, replay, health/llm) are 404 unless this is
+      # explicitly enabled, so the deployed stack never exposes a request that spends money or rewrites the
+      # shared bank. Local development can set ADMIN_ENDPOINTS_ENABLED=1. See .env.example.
+      ADMIN_ENDPOINTS_ENABLED: ${ADMIN_ENDPOINTS_ENABLED:-0}
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-1}
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-10}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-86400}
     expose:
       - "8000"
     depends_on:

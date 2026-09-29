@@ -4,6 +4,7 @@ import { ArrowUp, BookOpen, CircleAlert, CircleCheck, PanelLeft, Plus, TriangleA
 import {
   api,
   promptStore,
+  RateLimitedError,
   streamRedflag,
   type Declined,
   type Ledger,
@@ -24,6 +25,7 @@ import { Thinking } from "@/components/reasoning";
 import { Sidebar } from "@/components/sidebar";
 import { CommitPrompt } from "@/components/commit-prompt";
 import { AddDecision } from "@/components/add-decision";
+import { ContactSales } from "@/components/contact-sales";
 import { DEFAULT_SETTINGS, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
@@ -150,6 +152,13 @@ type Turn = {
 export default function Page() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [unresolved, setUnresolved] = useState<UnresolvedDecision[]>([]);
+  /** Set when the server refuses for being out of allowance. Stops every further prompt. */
+  const [gate, setGate] = useState<{ limit: number; retryAfter: number } | null>(null);
+  /** Published limit, and how many this visit has spent, so the header can show what is left. */
+  const [limitUsed, setLimitUsed] = useState(0);
+  // Mirrored into a ref so `ask` reads the current value: it is called from callbacks that closed over an
+  // older render, and a stale `null` there would let a request through after the gate is up.
+  const gateRef = useRef<{ limit: number; retryAfter: number } | null>(null);
   /** Recording a decision from the empty state: the composer, and the text it hands to the sheet. */
   const [recordOpen, setRecordOpen] = useState(false);
   const [recordSeed, setRecordSeed] = useState("");
@@ -163,6 +172,8 @@ export default function Page() {
   const showEvidence = settings.sourcesOpen;
   // The most recent answer drives the drawer: a no-precedent reply has no calibration to point at.
   const latestNoPrecedent = turns.length > 0 && !!turns[turns.length - 1].noPrecedent;
+  /** Published limit, so the header can show what is left before the server refuses. */
+  const limitInfo = health?.limits;
   const endRef = useRef<HTMLDivElement>(null);
   const busyRef = useRef(false);
   const turnsRef = useRef<Turn[]>([]);
@@ -180,6 +191,10 @@ export default function Page() {
   }, [turns]);
 
   useEffect(() => {
+    gateRef.current = gate;
+  }, [gate]);
+
+  useEffect(() => {
     // Only follow the page while an answer is actually being written, and only for the turn that is
     // streaming. Previously this fired on every `turns` change, so dismissing the add-decision panel (or
     // opening it, or committing) yanked the viewport to the bottom of the page.
@@ -191,7 +206,11 @@ export default function Page() {
   async function ask(text: string) {
     const question = text.trim();
     if (!question || busyRef.current) return;
+    // Belt and braces: the composer is replaced by the gate when this is set, but a stale keypress or a
+    // preset click must not slip a request through either.
+    if (gateRef.current) return;
     busyRef.current = true;
+    setLimitUsed((n) => n + 1);
     setInput("");
     const id = `${Date.now()}`;
     const patch = (fn: (t: Turn) => Turn) =>
@@ -261,7 +280,25 @@ export default function Page() {
       }, undefined, history);
       patch((t) => ({ ...t, busy: false }));
     } catch (err) {
-      patch((t) => ({ ...t, error: String(err), busy: false, status: "error" }));
+      // Out of allowance is not an error state: the turn is dropped rather than rendered as a failed answer,
+      // and the gate takes over the composer so no further prompt can be sent.
+      if (err instanceof RateLimitedError) {
+        setGate({ limit: err.limit || 10, retryAfter: err.retryAfter });
+        setTurns((prev) => prev.filter((x) => x.id !== id));
+      } else if (err instanceof TypeError) {
+        // `fetch` rejects with a TypeError for a cross-origin response the browser refused to hand over. A
+        // 429 without CORS headers looks exactly like this, so rather than render a scary "Failed to fetch"
+        // we ask a free endpoint whether we are simply out of allowance, and gate if so.
+        const gated = await promptStore.gateCheck();
+        if (gated) {
+          setGate(gated);
+          setTurns((prev) => prev.filter((x) => x.id !== id));
+        } else {
+          patch((t) => ({ ...t, error: String(err), busy: false, status: "error" }));
+        }
+      } else {
+        patch((t) => ({ ...t, error: String(err), busy: false, status: "error" }));
+      }
     } finally {
       busyRef.current = false;
     }
@@ -309,6 +346,13 @@ export default function Page() {
             {showEvidence && (
               <span className="hidden text-[12px] text-ink-faint sm:inline">evidence open</span>
             )}
+            {/* Visible before the limit bites, so running out is a known boundary rather than a surprise. */}
+            {limitInfo?.enabled && limitInfo.requests_per_window ? (
+              <span className="hidden font-mono text-[11.5px] text-ink-faint sm:inline">
+                {Math.max(0, (limitInfo.requests_per_window ?? 0) - limitUsed)} of{" "}
+                {limitInfo.requests_per_window} left
+              </span>
+            ) : null}
           </div>
         </div>
       </header>
@@ -678,7 +722,19 @@ export default function Page() {
         />
       )}
 
-      {/* composer */}
+      {/* composer. When the allowance is gone the gate replaces it entirely, so there is no input left to
+          type into and no submit button to press. */}
+      {gate ? (
+        <div className="fixed inset-x-0 bottom-0 border-t border-rule bg-paper/95 backdrop-blur">
+          <div className="max-h-[70vh] overflow-y-auto">
+            <ContactSales
+              limit={gate.limit}
+              retryAfterSeconds={gate.retryAfter}
+              contactUrl={process.env.NEXT_PUBLIC_CONTACT_URL}
+            />
+          </div>
+        </div>
+      ) : (
       <div className="fixed inset-x-0 bottom-0 border-t border-rule bg-paper/95 backdrop-blur">
         <form
           className="mx-auto flex max-w-[1180px] items-end gap-2 px-4 py-3 sm:gap-3 sm:px-6 sm:py-4"
@@ -716,6 +772,7 @@ export default function Page() {
           </button>
         </form>
       </div>
+      )}
     </div>
   );
 }
