@@ -21,6 +21,11 @@ Local classification: [Laya](https://huggingface.co/convaiinnovations/laya). Pro
 | Live demo | https://premortem.lexcontra.com/ |
 | API | https://premortem-api.lexcontra.com/ (`GET /health`) |
 
+> **Read the write-up:** the four places making the system refuse to answer
+> fought the model's instinct to be helpful, plus the bugs that only appeared
+> once it was running, is at
+> [adityavikram.dev/blog/pre-mortem-refuses-to-answer](https://adityavikram.dev/blog/pre-mortem-refuses-to-answer).
+
 ---
 
 ## The idea, explained like you're 5
